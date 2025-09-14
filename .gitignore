@@ -1,0 +1,74 @@
+# -----------------------------
+# OS / IDE / divers
+# -----------------------------
+.DS_Store
+Thumbs.db
+*.log
+logs/
+*.tmp
+*.swp
+*.swo
+.vscode/
+.idea/
+*.code-workspace
+
+# -----------------------------
+# Secrets / env
+# -----------------------------
+.env
+.env.*            # .env.local, .env.development, etc.
+!.env.example     # garde un template d’ENV
+
+# -----------------------------
+# Python (tdms-backend)
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dylib
+.venv/
+venv/
+.eggs/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage/
+htmlcov/
+.ipynb_checkpoints/
+
+# Artéfacts de l’app
+tdms-backend/db.sqlite
+tdms-backend/tmp/
+tdms-backend/data/**        # parquet générés
+!tdms-backend/data/.gitkeep # garde le dossier vide si besoin
+
+# -----------------------------
+# Node / Next.js (tdms-frontend)
+# -----------------------------
+tdms-frontend/node_modules/
+tdms-frontend/.next/
+tdms-frontend/.turbo/
+tdms-frontend/out/
+tdms-frontend/.vercel/
+tdms-frontend/.eslintcache
+tdms-frontend/.swc/
+tdms-frontend/coverage/
+
+# (Ne PAS ignorer package-lock.json — commit-le)
+# !tdms-frontend/package-lock.json  # <- juste un rappel, pas nécessaire
+
+# -----------------------------
+# Données lourdes / binaires
+# -----------------------------
+*.parquet
+*.tdms
+*.mat
+*.csv.zip
+
+# Autorise éventuellement un répertoire d’exemples versionnés
+# (si tu veux garder un tout petit fichier de démo dans le repo)
+!samples/**
