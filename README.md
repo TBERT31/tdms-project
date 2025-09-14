@@ -66,3 +66,17 @@ cd tdms-backend
 .\.venv\Scripts\Activate.ps1
 python .\make_week_signals.py
 ```
+
+> SORTIE : tdms-backend\week_signals.tdms
+
+# (Si ce n'est pas déjà fait,) Lancer le serveur FastAPI 
+```
+.\.venv\Scripts\activate
+uvicorn app.main:app --reload --port 8000
+```
+
+# Ingérer le fichier tdms-backend\week_signals.tdms
+> Ouvrir un autre terminal et se rendre dans `cd tdms-backend` (car c'est là où se situe notre fichier)
+```
+curl.exe -F "file=@week_signals.tdms" http://localhost:8000/ingest
+```
