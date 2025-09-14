@@ -50,3 +50,19 @@ curl.exe -F "file=@Digital_Input.tdms" http://localhost:8000/ingest
 ```
 npm run dev
 ```
+
+
+---
+
+> https://fr.mathworks.com/help/daq/examples.html?s_tid=CRUX_topnav&category=tdms-format-files
+
+# courbe multi-traces façon MATLAB
+> Ajout du fichier tdms-backend\make_week_signals.py
+
+# Création du fichier dataset (TDMS) :
+
+```
+cd tdms-backend
+.\.venv\Scripts\Activate.ps1
+python .\make_week_signals.py
+```
