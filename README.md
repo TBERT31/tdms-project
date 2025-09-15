@@ -1,4 +1,4 @@
-# Télécharger le fichier TDMS :
+## Télécharger le fichier TDMS :
 ```
 curl.exe -L -o Digital_Input.tdms "https://raw.githubusercontent.com/adamreeve/npTDMS/master/nptdms/test/data/Digital_Input.tdms"
 ```
@@ -56,7 +56,7 @@ npm run dev
 
 > https://fr.mathworks.com/help/daq/examples.html?s_tid=CRUX_topnav&category=tdms-format-files
 
-# courbe multi-traces façon MATLAB
+## Courbe multi-traces façon MATLAB
 > Ajout du fichier tdms-backend\make_week_signals.py
 
 # Création du fichier dataset (TDMS) :
@@ -79,4 +79,24 @@ uvicorn app.main:app --reload --port 8000
 > Ouvrir un autre terminal et se rendre dans `cd tdms-backend` (car c'est là où se situe notre fichier)
 ```
 curl.exe -F "file=@week_signals.tdms" http://localhost:8000/ingest
+```
+
+
+## Amplitude sweep / Phase sweep
+> cf. `tdms-backend\make_sweep_tdms.py`
+
+# Générer le fichier tdms :
+```
+cd tdms-backend
+.\.venv\Scripts\Activate.ps1
+python .\make_sweeps_tdms.py
+```
+
+> Une fois le fichier `tdms-backend/sweeps.tdms` généré
+
+# Lancer le serveur si ce n'est pas déjà fait (`uvicorn app.main:app --reload --port 8000`)
+> Puis ingérer le nouveau fichier
+
+```
+curl.exe -F "file=@sweeps.tdms" http://localhost:8000/ingest
 ```
