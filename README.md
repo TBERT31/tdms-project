@@ -133,3 +133,18 @@ python .\make_weather_tdms.py
 ```
 curl.exe -F "file=@weather_60d.tdms" http://localhost:8000/ingest
 ```
+
+# Timetable Motor Graph
+> Créer le fichier python suivant `tdms-backend\make_timetable_motor.py`
+
+## Création du fichier tdms associé
+```
+cd tdms-backend
+.\.venv\Scripts\Activate.ps1
+python .\make_timetable_motor.py
+```
+
+## Ingestion du fichier 
+```
+curl.exe -F "file=@motor_timetable.tdms" http://localhost:8000/ingest
+```
