@@ -100,3 +100,21 @@ python .\make_sweeps_tdms.py
 ```
 curl.exe -F "file=@sweeps.tdms" http://localhost:8000/ingest
 ```
+
+
+## Graphiqe : Pulse / Sensor X / Sensor Y
+> Etape 1 on créer le fichier suivant `tdms-backend\make_pulse_tdms.py`
+
+> Puis comme d'habitude :
+```
+cd tdms-backend
+.\.venv\Scripts\Activate.ps1
+python .\make_pulse_tdms.py
+```
+
+
+# Une fois le fichier `tdms-backend\pulse_ringing.tdms` généré 
+# Ingérer le fichier(# Attention le serveur backend doit être démarré : `uvicorn app.main:app --reload --port 8000) :
+```
+curl.exe -F "file=@pulse_ringing.tdms" http://localhost:8000/ingest 
+```

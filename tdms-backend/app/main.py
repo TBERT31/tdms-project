@@ -75,10 +75,13 @@ def list_channels(dataset_id: int):
 @app.get("/window")
 def get_window(
     channel_id: int = Query(...),
-    start: str | None = Query(None, description="ISO datetimes si has_time, sinon entier minimal"),
-    end: str | None = Query(None, description="ISO datetimes si has_time, sinon entier maximal"),
-    points: int = Query(2000, ge=10, le=20000, description="downsampling cible"),
-    agg: str = Query("mean", description="mean|max|min")
+    start: str | None = Query(None, description="ISO datetimes si has_time"),
+    end: str | None = Query(None, description="ISO datetimes si has_time"),
+    start_sec: float | None = Query(None, description="fenêtre relative en secondes"),
+    end_sec: float | None = Query(None, description="fenêtre relative en secondes"),
+    relative: bool = Query(False, description="temps en secondes depuis le début"),
+    points: int = Query(2000, ge=10, le=20000),
+    agg: str = Query("mean", description="mean|max|min"),
 ):
     with Session(engine) as s:
         ch = s.get(Channel, channel_id)
@@ -89,6 +92,38 @@ def get_window(
 
     if ch.has_time:
         df["time"] = pd.to_datetime(df["time"])
+
+        if relative:
+            df["sec"] = (df["time"] - df["time"].iloc[0]).dt.total_seconds()
+
+            if start_sec is not None:
+                df = df[df["sec"] >= float(start_sec)]
+            if end_sec is not None:
+                df = df[df["sec"] <= float(end_sec)]
+
+            # downsample simple par segments d’index
+            if len(df) > points:
+                bins = np.linspace(0, len(df)-1, points+1, dtype=int)
+                take = []
+                for i in range(len(bins)-1):
+                    seg = df.iloc[bins[i]:bins[i+1]]
+                    if len(seg) == 0: 
+                        continue
+                    if   agg == "max": row = seg.loc[seg["value"].idxmax()]
+                    elif agg == "min": row = seg.loc[seg["value"].idxmin()]
+                    else:              row = seg.iloc[[0]].assign(value=seg["value"].mean()).iloc[0]
+                    take.append(row)
+                df = pd.DataFrame(take)
+
+            return {
+                "x": df["sec"].astype(float).tolist(),
+                "y": df["value"].astype(float).tolist(),
+                "unit": ch.unit,
+                "has_time": True,
+                "x_unit": "s",
+            }
+
+        # mode “datetimes” inchangé
         if start: df = df[df["time"] >= pd.to_datetime(start)]
         if end:   df = df[df["time"] <= pd.to_datetime(end)]
         if len(df) > points:
@@ -108,15 +143,16 @@ def get_window(
             "unit": ch.unit,
             "has_time": True
         }
-    else:
-        if start: df = df[df["time"] >= int(start)]
-        if end:   df = df[df["time"] <= int(end)]
-        if len(df) > points:
-            bins = np.linspace(0, len(df)-1, points, dtype=int)
-            df = df.iloc[bins]
-        return {
-            "x": df["time"].astype(int).tolist(),
-            "y": df["value"].astype(float).tolist(),
-            "unit": ch.unit,
-            "has_time": False
-        }
+
+    # --- cas sans horodatage : inchangé ---
+    if start: df = df[df["time"] >= int(start)]
+    if end:   df = df[df["time"] <= int(end)]
+    if len(df) > points:
+        bins = np.linspace(0, len(df)-1, points, dtype=int)
+        df = df.iloc[bins]
+    return {
+        "x": df["time"].astype(int).tolist(),
+        "y": df["value"].astype(float).tolist(),
+        "unit": ch.unit,
+        "has_time": False
+    }

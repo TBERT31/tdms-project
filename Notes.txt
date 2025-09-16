@@ -1,0 +1,29 @@
+Notes :
+
+- Ajouter la couche Auth, gestion des accès, cache, resilience (fallback & retry) dans l'api-gateway.
+
+- Pour le service qui traite les données (correspond ici au tdms-backend), couper en deux services métiers (Neuro et Cardio).
+
+- Selon le type de fichiers tdms ingéré table faire des channel/dataset différents. (surement bateau comme première propositions mais channel_neuro, dataset_neuro).
+	- tdms ce sont des mesures bien spécifique et en fait pour couple de table (channel/dataset) il serait bien que le type de tdms soit souvent le même !
+	- Au niveau de la page d'ingestion on ajoutera des paramètres qui indique le type de données qui seront ingérer et selon ça on déterminera vers quelle table envoyer les données ingérées.
+	
+- L'ingestion de fichier enorme en données va forcement consommé beaucoup de ressource, 
+	il faudra penser à utiliser la multiplication des instances avec Kubernetes afin de paralléliser les process et accélérer le temps de traitement.
+	
+	- Une autre possibilité, qui n'accélére pas le temps de traitement mais qui permet d'envoyer des fichiers à traiter à la chaîne. Serait une route asynchrone, 
+	On stock les fichiers du client dans un S3 (de manière temporaire), et on créer une queue/file qui atteint que la première requête d'ingestion soit traité, puis la deuxième etc etc 
+	Dans le cas où les thread/parallélisation ne sont pas possible.
+	
+- Pour la communication frontend/backend lorsque les données sont énorme il me faudrait un fichier tdms assez lourd comme dans l'exemple de Guillaume pour tester.
+Ensuite je pourrais voir à partir de quel volume de données cela est problématique et comment optimiser cela. 
+Je n'arrive pas à quantifié à partir de quelle quantité de données cela devient intraitable pour le frontend.
+
+	Solutions possibles pour garantir un traitement rapide :
+		- Downsampling serveur (réduire le nombre de point intélligement dans une série de point, de sorte que la courbe garde la même forme mais sans avoir autant de point)
+		- Fenêtrage strict
+		- Formats compacts (Activer la compression gzip, idéalement ztsd si client la gère via Arrow)
+		- Indexation & engine (Parquet sur disque/S3 + DuckDB côté service / TimescaleDB (Postgres) / ClickHouse (colonnaire, serveur))
+		- Cache (Redis)
+		- HTTP/2
+
