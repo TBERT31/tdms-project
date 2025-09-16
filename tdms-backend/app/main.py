@@ -169,3 +169,50 @@ def dataset_meta(dataset_id: int):
         # pas de meta.json -> renvoyer quelque chose de minimal
         return {"file_properties": {}, "group_properties": {}, "channels": []}
     return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+@app.get("/multi_window")
+def multi_window(
+    channel_ids: str,
+    points: int = Query(2000, ge=10, le=20000),
+    agg: str = Query("mean", description="mean|max|min")
+):
+    ids = [int(x) for x in channel_ids.split(",") if x.strip()]
+    series = []
+
+    with Session(engine) as s:
+        for cid in ids:
+            ch = s.get(Channel, cid)
+            if not ch:
+                continue
+            df = pq.read_table(ch.parquet_path).to_pandas()
+
+            if len(df) > points:
+                bins = np.linspace(0, len(df)-1, points+1, dtype=int)
+                take = []
+                for i in range(len(bins)-1):
+                    seg = df.iloc[bins[i]:bins[i+1]]
+                    if len(seg) == 0:
+                        continue
+                    if agg == "max":
+                        row = seg.loc[seg["value"].idxmax()]
+                    elif agg == "min":
+                        row = seg.loc[seg["value"].idxmin()]
+                    else:
+                        row = seg.iloc[[0]].assign(value=seg["value"].mean()).iloc[0]
+                    take.append(row)
+                df = pd.DataFrame(take)
+
+            if ch.has_time:
+                x = pd.to_datetime(df["time"]).astype("datetime64[ms]").dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ").tolist()
+            else:
+                x = df["time"].astype(int).tolist()
+
+            series.append({
+                "name": f"{ch.group_name} / {ch.channel_name} (ds{ch.dataset_id})",
+                "x": x,
+                "y": df["value"].astype(float).tolist()
+            })
+
+    return {"series": series}
+
