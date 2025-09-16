@@ -156,3 +156,16 @@ def get_window(
         "unit": ch.unit,
         "has_time": False
     }
+
+@app.get("/dataset_meta")
+def dataset_meta(dataset_id: int):
+    # On récupère UN canal pour retrouver le dossier "data/<stem>"
+    with Session(engine) as s:
+        ch = s.exec(select(Channel).where(Channel.dataset_id == dataset_id)).first()
+        if not ch:
+            raise HTTPException(404, "Dataset not found")
+    meta_path = Path(ch.parquet_path).parent / "_meta.json"
+    if not meta_path.exists():
+        # pas de meta.json -> renvoyer quelque chose de minimal
+        return {"file_properties": {}, "group_properties": {}, "channels": []}
+    return json.loads(meta_path.read_text(encoding="utf-8"))
