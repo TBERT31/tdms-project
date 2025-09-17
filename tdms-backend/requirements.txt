@@ -5,3 +5,4 @@ pandas==2.2.2
 pyarrow==17.0.0
 sqlmodel==0.0.22
 python-multipart==0.0.9
+lttb==0.3.2

@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import pyarrow.parquet as pq
+from .lttb import smart_downsample_production
 
 from .models import Dataset, Channel
 from .io_tdms import tdms_to_parquet
@@ -81,7 +82,7 @@ def get_window(
     end_sec: float | None = Query(None, description="fenêtre relative en secondes"),
     relative: bool = Query(False, description="temps en secondes depuis le début"),
     points: int = Query(2000, ge=10, le=20000),
-    agg: str = Query("mean", description="mean|max|min"),
+    method: str = Query("lttb", description="lttb|uniform - LTTB par défaut"),
 ):
     with Session(engine) as s:
         ch = s.get(Channel, channel_id)
@@ -96,65 +97,83 @@ def get_window(
         if relative:
             df["sec"] = (df["time"] - df["time"].iloc[0]).dt.total_seconds()
 
+            # Filtrage temporel
             if start_sec is not None:
                 df = df[df["sec"] >= float(start_sec)]
             if end_sec is not None:
                 df = df[df["sec"] <= float(end_sec)]
 
-            # downsample simple par segments d’index
-            if len(df) > points:
-                bins = np.linspace(0, len(df)-1, points+1, dtype=int)
-                take = []
-                for i in range(len(bins)-1):
-                    seg = df.iloc[bins[i]:bins[i+1]]
-                    if len(seg) == 0: 
-                        continue
-                    if   agg == "max": row = seg.loc[seg["value"].idxmax()]
-                    elif agg == "min": row = seg.loc[seg["value"].idxmin()]
-                    else:              row = seg.iloc[[0]].assign(value=seg["value"].mean()).iloc[0]
-                    take.append(row)
-                df = pd.DataFrame(take)
+            df_clean = df[["sec", "value"]].rename(columns={"sec": "time"})
+            
+            # Downsampling avec choix de méthode
+            if len(df_clean) > points:
+                if method == "lttb":
+                    df_sampled = smart_downsample_production(df_clean, points)
+                else:  # uniform
+                    bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
+                    df_sampled = df_clean.iloc[bins]
+            else:
+                df_sampled = df_clean
 
             return {
-                "x": df["sec"].astype(float).tolist(),
-                "y": df["value"].astype(float).tolist(),
+                "x": df_sampled["time"].astype(float).tolist(),
+                "y": df_sampled["value"].astype(float).tolist(),
                 "unit": ch.unit,
                 "has_time": True,
                 "x_unit": "s",
+                "method": method,
+                "original_points": len(df),
+                "returned_points": len(df_sampled)
             }
 
-        # mode “datetimes” inchangé
+        # Mode datetimes absolus
         if start: df = df[df["time"] >= pd.to_datetime(start)]
         if end:   df = df[df["time"] <= pd.to_datetime(end)]
-        if len(df) > points:
-            bins = np.linspace(0, len(df)-1, points+1, dtype=int)
-            take = []
-            for i in range(len(bins)-1):
-                seg = df.iloc[bins[i]:bins[i+1]]
-                if len(seg)==0: continue
-                if   agg == "max": row = seg.loc[seg["value"].idxmax()]
-                elif agg == "min": row = seg.loc[seg["value"].idxmin()]
-                else:              row = seg.iloc[[0]].assign(value=seg["value"].mean()).iloc[0]
-                take.append(row)
-            df = pd.DataFrame(take)
+        
+        df_clean = df[["time", "value"]]
+        
+        if len(df_clean) > points:
+            if method == "lttb":
+                df_sampled = smart_downsample_production(df_clean, points)
+            else:  # uniform
+                bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
+                df_sampled = df_clean.iloc[bins]
+        else:
+            df_sampled = df_clean
+            
         return {
-            "x": df["time"].astype("datetime64[ms]").dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ").tolist(),
-            "y": df["value"].astype(float).tolist(),
+            "x": df_sampled["time"].astype("datetime64[ms]").dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ").tolist(),
+            "y": df_sampled["value"].astype(float).tolist(),
             "unit": ch.unit,
-            "has_time": True
+            "has_time": True,
+            "method": method,
+            "original_points": len(df),
+            "returned_points": len(df_sampled)
         }
 
-    # --- cas sans horodatage : inchangé ---
-    if start: df = df[df["time"] >= int(start)]
-    if end:   df = df[df["time"] <= int(end)]
-    if len(df) > points:
-        bins = np.linspace(0, len(df)-1, points, dtype=int)
-        df = df.iloc[bins]
+    # Cas sans horodatage (une seule fois)
+    df_clean = df[["time", "value"]]
+    
+    if start: df_clean = df_clean[df_clean["time"] >= int(start)]
+    if end:   df_clean = df_clean[df_clean["time"] <= int(end)]
+    
+    if len(df_clean) > points:
+        if method == "lttb":
+            df_sampled = smart_downsample_production(df_clean, points)
+        else:  # uniform
+            bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
+            df_sampled = df_clean.iloc[bins]
+    else:
+        df_sampled = df_clean
+    
     return {
-        "x": df["time"].astype(int).tolist(),
-        "y": df["value"].astype(float).tolist(),
+        "x": df_sampled["time"].astype(int).tolist(),
+        "y": df_sampled["value"].astype(float).tolist(),
         "unit": ch.unit,
-        "has_time": False
+        "has_time": False,
+        "method": method,
+        "original_points": len(df),
+        "returned_points": len(df_sampled)
     }
 
 @app.get("/dataset_meta")
