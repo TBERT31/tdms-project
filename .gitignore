@@ -41,7 +41,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Artéfacts de l’app
-tdms-backend/db.sqlite
+# tdms-backend/db.sqlite
 tdms-backend/tmp/
 tdms-backend/data/**        # parquet générés
 !tdms-backend/data/.gitkeep # garde le dossier vide si besoin

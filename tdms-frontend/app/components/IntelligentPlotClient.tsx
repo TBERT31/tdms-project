@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
 
@@ -26,6 +26,13 @@ export default function IntelligentPlotClient({
   const [isLoading, setIsLoading] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(0);
   const lastZoomRef = useRef<{ start: number; end: number } | null>(null);
+
+  useEffect(() => {
+    setPlotData(initialData);
+    setZoomLevel(0);
+    lastZoomRef.current = null;
+    setIsLoading(false);
+  }, [channelId, initialData]);
 
   const handleRelayout = useCallback(async (eventData: any) => {
     // Détecter si c'est un zoom sur l'axe X
@@ -83,7 +90,7 @@ export default function IntelligentPlotClient({
       <div style={{
         position: "absolute",
         top: 10,
-        right: 10,
+        left: 10,
         zIndex: 1000,
         padding: "4px 8px",
         backgroundColor: statusColor,

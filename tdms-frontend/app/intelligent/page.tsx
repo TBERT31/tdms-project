@@ -271,6 +271,7 @@ export default function IntelligentPage() {
       {loading && <div>Chargement de la vue globale…</div>}
       {plotData && channelId && (
         <IntelligentPlotClient
+          key={channelId}    
           channelId={channelId}
           initialData={plotData}
           onZoomReload={handleZoomReload}
