@@ -38,6 +38,8 @@ interface TimeRange {
   has_time: boolean;
   min_timestamp?: number;
   max_timestamp?: number;
+  min_index?: number;
+  max_index?: number;
   total_points: number;
 }
 
@@ -83,6 +85,7 @@ export default function IntelligentPage() {
       if (response.ok) {
         const range = await response.json();
         setTimeRange(range);
+        console.log("Time range chargé:", range);
       }
     } catch (error) {
       console.error("Erreur chargement time range:", error);
@@ -120,7 +123,7 @@ export default function IntelligentPage() {
       throw new Error("Channel ou time range non disponible");
     }
 
-    console.log(`Rechargement zoom: ${range.start} → ${range.end}`);
+    console.log(`Rechargement zoom: ${range.start.toFixed(2)} → ${range.end.toFixed(2)}`);
 
     const params = new URLSearchParams({
       channel_id: channelId.toString(),
@@ -190,7 +193,7 @@ export default function IntelligentPage() {
         fontSize: 14 
       }}>
         <strong>Mode Intelligent:</strong> Vue globale ({globalPoints} pts) puis rechargement automatique 
-        avec plus de détails ({zoomPoints} pts) lors du zoom. Idéal pour l'exploration de données.
+        avec plus de détails ({zoomPoints} pts) lors du zoom. Alertes automatiques aux bornes du dataset.
       </div>
 
       <UploadBox onDone={loadDatasets} />
@@ -247,7 +250,18 @@ export default function IntelligentPage() {
         }}>
           <strong>Dataset:</strong> {timeRange.total_points.toLocaleString()} points total
           {timeRange.has_time && timeRange.min_timestamp && timeRange.max_timestamp && (
-            <> • Durée: {((timeRange.max_timestamp - timeRange.min_timestamp) / 3600).toFixed(1)}h</>
+            <>
+              {" • "}
+              <strong>Bornes:</strong> {timeRange.min_timestamp.toFixed(1)}s → {timeRange.max_timestamp.toFixed(1)}s
+              {" • "}
+              <strong>Durée:</strong> {((timeRange.max_timestamp - timeRange.min_timestamp) / 3600).toFixed(1)}h
+            </>
+          )}
+          {!timeRange.has_time && timeRange.min_index !== undefined && timeRange.max_index !== undefined && (
+            <>
+              {" • "}
+              <strong>Index:</strong> {timeRange.min_index} → {timeRange.max_index}
+            </>
           )}
         </div>
       )}
@@ -269,11 +283,12 @@ export default function IntelligentPage() {
       {/* Graphique intelligent */}
       {!plotData && !loading && <div>Sélectionnez un canal pour commencer l'exploration…</div>}
       {loading && <div>Chargement de la vue globale…</div>}
-      {plotData && channelId && (
+      {plotData && channelId && timeRange && (
         <IntelligentPlotClient
           key={channelId}    
           channelId={channelId}
           initialData={plotData}
+          timeRange={timeRange}
           onZoomReload={handleZoomReload}
         />
       )}
@@ -294,6 +309,7 @@ export default function IntelligentPage() {
             <li>🔄 <strong>Rechargement auto :</strong> Les données sont rechargées automatiquement avec plus de précision</li>
             <li>🏠 <strong>Reset :</strong> Double-clic pour revenir à la vue globale</li>
             <li>🔧 <strong>Reload :</strong> Utilisez le bouton de rechargement dans la barre d'outils</li>
+            <li>⚠️ <strong>Alertes :</strong> Notification automatique quand vous atteignez les bornes du dataset</li>
           </ul>
         </div>
       )}

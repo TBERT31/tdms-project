@@ -14,12 +14,26 @@ interface IntelligentPlotProps {
     unit?: string;
     has_time: boolean;
   };
+  timeRange?: {
+    min_timestamp?: number;
+    max_timestamp?: number;
+    min_index?: number;
+    max_index?: number;
+    has_time: boolean;
+  };
   onZoomReload?: (range: { start: number; end: number }) => Promise<{ x: number[]; y: number[]; }>;
+}
+
+interface BoundsAlert {
+  message: string;
+  type: 'min' | 'max';
+  timestamp: number;
 }
 
 export default function IntelligentPlotClient({ 
   channelId, 
   initialData, 
+  timeRange,
   onZoomReload 
 }: IntelligentPlotProps) {
   const [plotData, setPlotData] = useState(initialData);
@@ -27,13 +41,52 @@ export default function IntelligentPlotClient({
   const [zoomLevel, setZoomLevel] = useState(0);
   const lastZoomRef = useRef<{ start: number; end: number } | null>(null);
   const [currentDragMode, setCurrentDragMode] = useState<'zoom' | 'pan' | 'select' | 'lasso'>('zoom');
+  const [boundsAlert, setBoundsAlert] = useState<BoundsAlert | null>(null);
 
   useEffect(() => {
     setPlotData(initialData);
     setZoomLevel(0);
     lastZoomRef.current = null;
     setIsLoading(false);
+    setBoundsAlert(null);
   }, [channelId, initialData]);
+
+  // Auto-dismiss alert après 3 secondes
+  useEffect(() => {
+    if (boundsAlert) {
+      const timer = setTimeout(() => {
+        setBoundsAlert(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [boundsAlert]);
+
+  const checkBounds = useCallback((start: number, end: number) => {
+    if (!timeRange) return { start, end };
+
+    const minBound = timeRange.has_time ? timeRange.min_timestamp! : timeRange.min_index!;
+    const maxBound = timeRange.has_time ? timeRange.max_timestamp! : timeRange.max_index!;
+    
+    if (start < minBound) {
+      setBoundsAlert({
+        message: `Début du dataset atteint (${minBound.toFixed(1)}${timeRange.has_time ? 's' : ''})`,
+        type: 'min',
+        timestamp: Date.now()
+      });
+      console.warn(`Borne min dépassée: ${start} < ${minBound}`);
+    }
+    
+    if (end > maxBound) {
+      setBoundsAlert({
+        message: `Fin du dataset atteinte (${maxBound.toFixed(1)}${timeRange.has_time ? 's' : ''})`,
+        type: 'max',
+        timestamp: Date.now()
+      });
+      console.warn(`Borne max dépassée: ${end} > ${maxBound}`);
+    }
+
+    return { start, end };
+  }, [timeRange]);
 
   const handleRelayout = useCallback(async (eventData: any) => {
     // Détecter changement de dragmode
@@ -41,10 +94,13 @@ export default function IntelligentPlotClient({
       setCurrentDragMode(eventData.dragmode);
     }
 
-    // Détecter si c'est un zoom sur l'axe X
+    // Détecter si c'est un zoom/pan sur l'axe X
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]'] && onZoomReload) {
       const start = Number(eventData['xaxis.range[0]']);
       const end = Number(eventData['xaxis.range[1]']);
+      
+      // Vérifier les bornes et afficher alerte si nécessaire
+      checkBounds(start, end);
       
       // Éviter les rechargements répétés pour la même range
       if (lastZoomRef.current?.start === start && lastZoomRef.current?.end === end) {
@@ -53,7 +109,7 @@ export default function IntelligentPlotClient({
       
       lastZoomRef.current = { start, end };
       
-      console.log(`Zoom détecté: ${start} → ${end}`);
+      console.log(`Navigation détectée: ${start.toFixed(2)} → ${end.toFixed(2)}`);
       
       setIsLoading(true);
       try {
@@ -67,10 +123,10 @@ export default function IntelligentPlotClient({
         
         setZoomLevel(prev => prev + 1);
         
-        console.log(`Données rechargées: ${newData.x.length} points dans la zone zoomée`);
+        console.log(`Données rechargées: ${newData.x.length} points dans la zone`);
         
       } catch (error) {
-        console.error('Erreur rechargement zoom:', error);
+        console.error('Erreur rechargement:', error);
       } finally {
         setIsLoading(false);
       }
@@ -82,8 +138,9 @@ export default function IntelligentPlotClient({
       setPlotData(initialData);
       setZoomLevel(0);
       lastZoomRef.current = null;
+      setBoundsAlert(null);
     }
-  }, [onZoomReload, initialData, currentDragMode]);
+  }, [onZoomReload, initialData, currentDragMode, checkBounds]);
 
   // Indicateur de statut
   const statusColor = isLoading ? "#ff9800" : (zoomLevel > 0 ? "#4caf50" : "#2196f3");
@@ -92,6 +149,28 @@ export default function IntelligentPlotClient({
 
   return (
     <div style={{ position: "relative" }}>
+      {/* Alerte de dépassement de bornes */}
+      {boundsAlert && (
+        <div style={{
+          position: "absolute",
+          top: 50,
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 1001,
+          padding: "8px 16px",
+          backgroundColor: boundsAlert.type === 'min' ? "#f44336" : "#ff9800",
+          color: "white",
+          borderRadius: "6px",
+          fontSize: "13px",
+          fontWeight: 500,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.2)",
+          animation: "fadeIn 0.3s ease-out"
+        }}>
+          ⚠️ {boundsAlert.message}
+        </div>
+      )}
+
       {/* Indicateur de statut */}
       <div style={{
         position: "absolute",
@@ -174,6 +253,7 @@ export default function IntelligentPlotClient({
               setPlotData(initialData);
               setZoomLevel(0);
               lastZoomRef.current = null;
+              setBoundsAlert(null);
             }
           }]
         }}
@@ -189,6 +269,20 @@ export default function IntelligentPlotClient({
       }}>
         💡 Zoomez pour charger plus de détails dans la zone sélectionnée • Double-clic pour revenir à la vue globale
       </div>
+
+      {/* CSS Animation pour l'alerte */}
+      <style jsx>{`
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+          }
+        }
+      `}</style>
     </div>
   );
 }
