@@ -1,3 +1,12 @@
+import { ChevronDown, ChevronRight, Settings, RotateCcw, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+
 interface AdvancedSettingsProps {
   globalPoints: number;
   setGlobalPoints: (value: number) => void;
@@ -34,151 +43,192 @@ export default function AdvancedSettings({
   resetToDefaults,
   allParamsValid
 }: AdvancedSettingsProps) {
+  const globalPointsValidation = validateParam(globalPoints, 'points');
+  const zoomPointsValidation = validateParam(zoomPoints, 'points');
+  const initialLimitValidation = validateParam(initialLimit, 'limit');
+
   return (
-    <div style={{ 
-      marginBottom: 16, 
-      padding: "12px", 
-      backgroundColor: "#f8f9fa", 
-      border: "1px solid #dee2e6", 
-      borderRadius: "4px" 
-    }}>
-      <button 
-        onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
-        style={{
-          backgroundColor: "transparent",
-          border: "none",
-          color: "#007bff",
-          cursor: "pointer",
-          fontSize: 14,
-          fontWeight: 500
-        }}
-      >
-        {showAdvancedSettings ? "▼" : "▶"} Paramètres avancés
-      </button>
-
-      {showAdvancedSettings && (
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-          {/* Points vue globale */}
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 500, color: "#555" }}>
-              Points vue globale:
-            </span>
-            <input
-              type="number"
-              value={globalPoints}
-              onChange={(e) => setGlobalPoints(Number(e.target.value))}
-              min={backendConstraints.points.min}
-              max={backendConstraints.points.max}
-              style={{ 
-                padding: "6px 8px", 
-                border: validateParam(globalPoints, 'points').isValid ? "1px solid #ddd" : "2px solid #dc3545", 
-                borderRadius: "3px",
-                fontSize: 13,
-                backgroundColor: validateParam(globalPoints, 'points').isValid ? "white" : "#fff5f5"
-              }}
-            />
-            {!validateParam(globalPoints, 'points').isValid && (
-              <span style={{ fontSize: 11, color: "#dc3545", fontWeight: 500 }}>
-                ⚠️ Doit être entre {backendConstraints.points.min} et {backendConstraints.points.max.toLocaleString()}
-              </span>
-            )}
-            <span style={{ fontSize: 11, color: "#666" }}>
-              Recommandé: 1000-5000
-            </span>
-          </label>
-
-          {/* Points zoom détaillé */}
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 500, color: "#555" }}>
-              Points zoom détaillé:
-            </span>
-            <input
-              type="number"
-              value={zoomPoints}
-              onChange={(e) => setZoomPoints(Number(e.target.value))}
-              min={backendConstraints.points.min}
-              max={backendConstraints.points.max}
-              style={{ 
-                padding: "6px 8px", 
-                border: validateParam(zoomPoints, 'points').isValid ? "1px solid #ddd" : "2px solid #dc3545", 
-                borderRadius: "3px",
-                fontSize: 13,
-                backgroundColor: validateParam(zoomPoints, 'points').isValid ? "white" : "#fff5f5"
-              }}
-            />
-            {!validateParam(zoomPoints, 'points').isValid && (
-              <span style={{ fontSize: 11, color: "#dc3545", fontWeight: 500 }}>
-                ⚠️ Doit être entre {backendConstraints.points.min} et {backendConstraints.points.max.toLocaleString()}
-              </span>
-            )}
-            <span style={{ fontSize: 11, color: "#666" }}>
-              Recommandé: 2000-10000
-            </span>
-          </label>
-
-          {/* Limite initiale lecture */}
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 500, color: "#555" }}>
-              Limite initiale lecture:
-            </span>
-            <input
-              type="number"
-              value={initialLimit}
-              onChange={(e) => setInitialLimit(Number(e.target.value))}
-              min={backendConstraints.limit.min}
-              max={backendConstraints.limit.max}
-              step={10000}
-              style={{ 
-                padding: "6px 8px", 
-                border: validateParam(initialLimit, 'limit').isValid ? "1px solid #ddd" : "2px solid #dc3545", 
-                borderRadius: "3px",
-                fontSize: 13,
-                backgroundColor: validateParam(initialLimit, 'limit').isValid ? "white" : "#fff5f5"
-              }}
-            />
-            {!validateParam(initialLimit, 'limit').isValid && (
-              <span style={{ fontSize: 11, color: "#dc3545", fontWeight: 500 }}>
-                ⚠️ Doit être entre {backendConstraints.limit.min.toLocaleString()} et {backendConstraints.limit.max.toLocaleString()}
-              </span>
-            )}
-            <span style={{ fontSize: 11, color: "#666" }}>
-              Max {backendConstraints.limit.max.toLocaleString()} (limite backend actuelle)
-            </span>
-          </label>
-
-          {/* Contrôles */}
-          <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 8 }}>
-            <button
-              onClick={resetToDefaults}
-              style={{
-                padding: "6px 12px",
-                backgroundColor: "#6c757d",
-                color: "white",
-                border: "none",
-                borderRadius: "3px",
-                fontSize: 12,
-                cursor: "pointer"
-              }}
-            >
-              Réinitialiser
-            </button>
-
-            {/* Indicateur de validation global */}
-            <div style={{
-              padding: "6px 8px",
-              borderRadius: "3px",
-              fontSize: 11,
-              textAlign: "center",
-              fontWeight: 500,
-              backgroundColor: allParamsValid ? "#d4edda" : "#f8d7da",
-              color: allParamsValid ? "#155724" : "#721c24",
-              border: allParamsValid ? "1px solid #c3e6cb" : "1px solid #f5c6cb"
-            }}>
-              {allParamsValid ? "✓ Paramètres valides" : "⚠️ Erreurs détectées"}
+    <Card className="mb-6">
+      <Collapsible open={showAdvancedSettings} onOpenChange={setShowAdvancedSettings}>
+        <CollapsibleTrigger asChild>
+          <CardHeader className="hover:bg-gray-50 transition-colors cursor-pointer pb-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                <CardTitle className="text-lg">Paramètres avancés</CardTitle>
+                {!allParamsValid && (
+                  <Badge variant="destructive" className="ml-2">
+                    <AlertTriangle className="h-3 w-3 mr-1" />
+                    Erreurs
+                  </Badge>
+                )}
+                {allParamsValid && showAdvancedSettings && (
+                  <Badge variant="default" className="ml-2 bg-green-600">
+                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                    Valide
+                  </Badge>
+                )}
+              </div>
+              {showAdvancedSettings ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
             </div>
-          </div>
-        </div>
-      )}
-    </div>
+            {!showAdvancedSettings && (
+              <CardDescription>
+                Configurez les limites de points et la performance selon vos fichiers
+              </CardDescription>
+            )}
+          </CardHeader>
+        </CollapsibleTrigger>
+
+        <CollapsibleContent>
+          <CardContent className="pt-0">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              {/* Points vue globale */}
+              <div className="space-y-2">
+                <Label htmlFor="globalPoints" className="text-sm font-medium">
+                  Points vue globale
+                </Label>
+                <Input
+                  id="globalPoints"
+                  type="number"
+                  value={globalPoints}
+                  onChange={(e) => setGlobalPoints(Number(e.target.value))}
+                  min={backendConstraints.points.min}
+                  max={backendConstraints.points.max}
+                  className={
+                    !globalPointsValidation.isValid 
+                      ? "border-red-500 focus:border-red-500 bg-red-50" 
+                      : ""
+                  }
+                />
+                {!globalPointsValidation.isValid && (
+                  <Alert variant="destructive" className="p-2">
+                    <AlertTriangle className="h-3 w-3" />
+                    <AlertDescription className="text-xs">
+                      Entre {backendConstraints.points.min} et {backendConstraints.points.max.toLocaleString()}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Recommandé: 1 000 - 5 000
+                </p>
+              </div>
+
+              {/* Points zoom détaillé */}
+              <div className="space-y-2">
+                <Label htmlFor="zoomPoints" className="text-sm font-medium">
+                  Points zoom détaillé
+                </Label>
+                <Input
+                  id="zoomPoints"
+                  type="number"
+                  value={zoomPoints}
+                  onChange={(e) => setZoomPoints(Number(e.target.value))}
+                  min={backendConstraints.points.min}
+                  max={backendConstraints.points.max}
+                  className={
+                    !zoomPointsValidation.isValid 
+                      ? "border-red-500 focus:border-red-500 bg-red-50" 
+                      : ""
+                  }
+                />
+                {!zoomPointsValidation.isValid && (
+                  <Alert variant="destructive" className="p-2">
+                    <AlertTriangle className="h-3 w-3" />
+                    <AlertDescription className="text-xs">
+                      Entre {backendConstraints.points.min} et {backendConstraints.points.max.toLocaleString()}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Recommandé: 2 000 - 10 000
+                </p>
+              </div>
+
+              {/* Limite initiale */}
+              <div className="space-y-2">
+                <Label htmlFor="initialLimit" className="text-sm font-medium">
+                  Limite initiale lecture
+                </Label>
+                <Input
+                  id="initialLimit"
+                  type="number"
+                  value={initialLimit}
+                  onChange={(e) => setInitialLimit(Number(e.target.value))}
+                  min={backendConstraints.limit.min}
+                  max={backendConstraints.limit.max}
+                  step={10000}
+                  className={
+                    !initialLimitValidation.isValid 
+                      ? "border-red-500 focus:border-red-500 bg-red-50" 
+                      : ""
+                  }
+                />
+                {!initialLimitValidation.isValid && (
+                  <Alert variant="destructive" className="p-2">
+                    <AlertTriangle className="h-3 w-3" />
+                    <AlertDescription className="text-xs">
+                      Entre {backendConstraints.limit.min.toLocaleString()} et {backendConstraints.limit.max.toLocaleString()}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Max {backendConstraints.limit.max.toLocaleString()} (limite backend)
+                </p>
+              </div>
+
+              {/* Contrôles */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Contrôles</Label>
+                <div className="space-y-2">
+                  <Button
+                    onClick={resetToDefaults}
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                  >
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                    Réinitialiser
+                  </Button>
+
+                  <div className={`
+                    p-2 rounded-md text-xs text-center font-medium border
+                    ${allParamsValid 
+                      ? 'bg-green-50 text-green-800 border-green-200' 
+                      : 'bg-red-50 text-red-800 border-red-200'
+                    }
+                  `}>
+                    {allParamsValid ? (
+                      <div className="flex items-center justify-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" />
+                        Paramètres valides
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center gap-1">
+                        <AlertTriangle className="h-3 w-3" />
+                        Erreurs détectées
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Conseils de performance */}
+            <Alert className="mt-4 bg-blue-50 border-blue-200">
+              <Settings className="h-4 w-4 text-blue-600" />
+              <AlertDescription className="text-blue-800">
+                <strong>Conseils performance :</strong> Pour les gros fichiers (&gt;1M points), 
+                augmentez la limite initiale. Pour les détails fins, augmentez les points zoom. 
+                Pour la fluidité, diminuez les points vue globale.
+              </AlertDescription>
+            </Alert>
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
+    </Card>
   );
 }

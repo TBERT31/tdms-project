@@ -1,3 +1,5 @@
+import { Loader2 } from "lucide-react";
+
 interface LoadingOverlayProps {
   isLoading: boolean;
 }
@@ -6,27 +8,10 @@ export default function LoadingOverlay({ isLoading }: LoadingOverlayProps) {
   if (!isLoading) return null;
 
   return (
-    <div style={{
-      position: "absolute",
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: "rgba(255,255,255,0.7)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      zIndex: 999,
-      borderRadius: "4px"
-    }}>
-      <div style={{ 
-        padding: "12px 20px", 
-        backgroundColor: "#333", 
-        color: "white", 
-        borderRadius: "4px",
-        fontSize: "14px"
-      }}>
-        Rechargement des données...
+    <div className="absolute inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-30 rounded-lg">
+      <div className="bg-gray-900 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        <span className="font-medium">Rechargement des données...</span>
       </div>
     </div>
   );

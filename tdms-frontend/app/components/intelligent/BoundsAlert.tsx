@@ -1,3 +1,6 @@
+import { AlertTriangle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+
 interface BoundsAlert {
   message: string;
   type: 'min' | 'max';
@@ -12,39 +15,19 @@ export default function BoundsAlert({ alert }: BoundsAlertProps) {
   if (!alert) return null;
 
   return (
-    <>
-      <div style={{
-        position: "absolute",
-        top: 50,
-        left: "50%",
-        transform: "translateX(-50%)",
-        zIndex: 1001,
-        padding: "8px 16px",
-        backgroundColor: alert.type === 'min' ? "#f44336" : "#ff9800",
-        color: "white",
-        borderRadius: "6px",
-        fontSize: "13px",
-        fontWeight: 500,
-        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-        border: "1px solid rgba(255,255,255,0.2)",
-        animation: "fadeIn 0.3s ease-out"
-      }}>
-        ⚠️ {alert.message}
-      </div>
-
-      {/* CSS Animation pour l'alerte */}
-      <style jsx>{`
-        @keyframes fadeIn {
-          from {
-            opacity: 0;
-            transform: translateX(-50%) translateY(-10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0);
-          }
-        }
-      `}</style>
-    </>
+    <div className="absolute top-12 left-1/2 transform -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-300">
+      <Alert 
+        variant="destructive" 
+        className={`
+          shadow-lg border-2 min-w-max
+          ${alert.type === 'min' ? 'bg-red-50 border-red-300' : 'bg-orange-50 border-orange-300'}
+        `}
+      >
+        <AlertTriangle className="h-4 w-4" />
+        <AlertDescription className="font-medium">
+          {alert.message}
+        </AlertDescription>
+      </Alert>
+    </div>
   );
 }
