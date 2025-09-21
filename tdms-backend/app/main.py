@@ -10,11 +10,14 @@ from .lttb import smart_downsample_production
 import pyarrow as pa
 import pyarrow.compute as pc
 from datetime import datetime as dt
+import json
 
 from .models import Dataset, Channel
 from .io_tdms import tdms_to_parquet
+from .config import settings, get_api_constraints  # Import de la configuration
 
-DB_URL = "sqlite:///db.sqlite"
+# Utilisation de la configuration centralisée
+DB_URL = settings.db_url
 engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
 SQLModel.metadata.create_all(engine)
 
@@ -28,6 +31,12 @@ app.add_middleware(
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
+
+# Route pour exposer les contraintes au frontend
+@app.get("/api/constraints")
+def get_constraints():
+    """Expose les contraintes backend au frontend."""
+    return get_api_constraints()
 
 @app.post("/ingest")
 async def ingest(file: UploadFile = File(...)):
@@ -84,7 +93,7 @@ def get_window(
     start_sec: float | None = Query(None, description="fenêtre relative en secondes"),
     end_sec: float | None = Query(None, description="fenêtre relative en secondes"),
     relative: bool = Query(False, description="temps en secondes depuis le début"),
-    points: int = Query(2000, ge=10, le=20000),
+    points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
     method: str = Query("lttb", description="lttb|uniform - LTTB par défaut"),
 ):
     with Session(engine) as s:
@@ -192,11 +201,10 @@ def dataset_meta(dataset_id: int):
         return {"file_properties": {}, "group_properties": {}, "channels": []}
     return json.loads(meta_path.read_text(encoding="utf-8"))
 
-
 @app.get("/multi_window")
 def multi_window(
     channel_ids: str,
-    points: int = Query(2000, ge=10, le=20000),
+    points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
     agg: str = Query("mean", description="mean|max|min")
 ):
     ids = [int(x) for x in channel_ids.split(",") if x.strip()]
@@ -246,9 +254,9 @@ def get_window_filtered(
     end_timestamp: float | None = Query(None, description="Timestamp Unix de fin (secondes)"), 
     # Pagination avec curseur (plus efficace qu'offset)
     cursor: float | None = Query(None, description="Curseur temporel pour pagination"),
-    limit: int = Query(50000, le=200000, description="Limite de points avant downsampling"),
+    limit: int = Query(settings.default_limit, ge=settings.limit_min, le=settings.limit_max),
     # Downsampling
-    points: int = Query(2000, ge=10, le=20000, description="Points après downsampling"),
+    points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
     method: str = Query("lttb", description="lttb|uniform - LTTB par défaut"),
 ):
     """
@@ -289,7 +297,6 @@ def get_window_filtered(
         if cursor is not None:
             cursor_ts = pa.scalar(int(cursor * 1_000_000), type=pa.timestamp('us'))
             filters.append(('time', '>', cursor_ts))
-    
     else:
         # Cas sans timestamps (index numérique)
         if start_timestamp is not None:
@@ -305,9 +312,9 @@ def get_window_filtered(
             # Lecture avec filtres (très efficace, ne lit que les données nécessaires)
             table = pq.read_table(
                 ch.parquet_path,
-                columns=['time', 'value'],  # Seulement les colonnes nécessaires
+                columns=['time', 'value'], # Seulement les colonnes nécessaires
                 filters=filters,
-                use_threads=True  # Parallélisation
+                use_threads=True # Parallélisation
             )
         else:
             # Lecture complète si pas de filtres
@@ -315,7 +322,6 @@ def get_window_filtered(
                 ch.parquet_path,
                 columns=['time', 'value']
             )
-    
     except Exception as e:
         raise HTTPException(500, f"Erreur lecture Parquet: {str(e)}")
     
@@ -395,7 +401,6 @@ def get_window_filtered(
         }
     }
 
-
 # Route utilitaire pour conversion timestamp
 @app.get("/timestamp_helpers")
 def timestamp_helpers(
@@ -431,18 +436,17 @@ def timestamp_helpers(
     result["examples"] = {
         "current_unix": now.timestamp(),
         "current_iso": now.isoformat() + "Z",
-        "usage": "Utilisez ces valeurs dans start_timestamp/end_timestamp de /window_v2"
+        "usage": "Utilisez ces valeurs dans start_timestamp/end_timestamp"
     }
     
     return result
-
 
 # Route de métadonnées temporelles pour un channel
 @app.get("/channels/{channel_id}/time_range")
 def get_channel_time_range(channel_id: int):
     """
     Récupère la plage temporelle d'un channel (min/max timestamps).
-    Utile pour déterminer les bornes pour /window_v2.
+    Utile pour déterminer les bornes.
     """
     
     with Session(engine) as s:
@@ -479,7 +483,7 @@ def get_channel_time_range(channel_id: int):
                 "min_iso": min_time.isoformat() + "Z" if min_time else None,
                 "max_iso": max_time.isoformat() + "Z" if max_time else None,
                 "total_points": len(table),
-                "usage": f"Utilisez start_timestamp entre {min_unix} et {max_unix} dans /window_v2"
+                "usage": f"Utilisez start_timestamp entre {min_unix} et {max_unix}"
             }
         else:
             # Données indexées numériquement
@@ -493,7 +497,7 @@ def get_channel_time_range(channel_id: int):
                 "min_index": min_idx,
                 "max_index": max_idx,
                 "total_points": len(table),
-                "usage": f"Utilisez start_timestamp entre {min_idx} et {max_idx} dans /window_v2"
+                "usage": f"Utilisez start_timestamp entre {min_idx} et {max_idx}"
             }
     
     except Exception as e:

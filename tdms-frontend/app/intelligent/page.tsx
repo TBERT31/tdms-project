@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import IntelligentPlotClient from "../components/IntelligentPlotClient";
 import UploadBox from "../components/UploadBox";
 
-
 interface Dataset {
   id: number;
   filename: string;
@@ -54,10 +53,52 @@ export default function IntelligentPage() {
   const [globalData, setGlobalData] = useState<FilteredWindowResp | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Paramètres pour la vue globale (moins de points pour performance)
-  const [globalPoints] = useState(2000);
-  // Paramètres pour le zoom (plus de points pour précision)
-  const [zoomPoints] = useState(3000);
+  // Paramètres configurables avec valeurs par défaut des variables d'environnement
+  const [globalPoints, setGlobalPoints] = useState(
+    Number(process.env.NEXT_PUBLIC_DEFAULT_GLOBAL_POINTS) || 2000
+  );
+  const [zoomPoints, setZoomPoints] = useState(
+    Number(process.env.NEXT_PUBLIC_DEFAULT_ZOOM_POINTS) || 3000
+  );
+  const [initialLimit, setInitialLimit] = useState(
+    Number(process.env.NEXT_PUBLIC_DEFAULT_INITIAL_LIMIT) || 100000
+  );
+  
+  // État pour l'affichage des paramètres avancés
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+
+  // Contraintes backend (chargées dynamiquement depuis l'API)
+  const [backendConstraints, setBackendConstraints] = useState({
+    points: { min: 10, max: 20000 },
+    limit: { min: 10000, max: 200000 }
+  });
+
+  // Chargement des contraintes backend au démarrage
+  useEffect(() => {
+    const loadConstraints = async () => {
+      try {
+        const response = await fetch(`${API}/api/constraints`);
+        if (response.ok) {
+          const constraints = await response.json();
+          setBackendConstraints(constraints);
+          console.log("Contraintes backend chargées:", constraints);
+        }
+      } catch (error) {
+        console.warn("Impossible de charger les contraintes backend, utilisation des valeurs par défaut:", error);
+      }
+    };
+    loadConstraints();
+  }, []);
+
+  // Validation des paramètres
+  const validateParam = (value: number, type: 'points' | 'limit') => {
+    const constraints = backendConstraints[type];
+    return {
+      isValid: value >= constraints.min && value <= constraints.max,
+      min: constraints.min,
+      max: constraints.max
+    };
+  };
 
   async function loadDatasets() {
     const response = await fetch(`${API}/datasets`, { cache: "no-store" });
@@ -95,12 +136,12 @@ export default function IntelligentPage() {
   async function loadGlobalView(selectedChannelId: number) {
     setLoading(true);
     try {
-      // Chargement de la vue globale avec moins de points
+      // Chargement de la vue globale avec paramètres configurables
       const params = new URLSearchParams({
         channel_id: selectedChannelId.toString(),
         points: globalPoints.toString(),
         method: "lttb",
-        limit: "100000" // Limite raisonnable pour la vue globale
+        limit: initialLimit.toString()
       });
 
       const response = await fetch(`${API}/get_window_filtered?${params}`, { cache: "no-store" });
@@ -159,7 +200,7 @@ export default function IntelligentPage() {
       loadTimeRange(channelId);
       loadGlobalView(channelId);
     }
-  }, [channelId]);
+  }, [channelId, globalPoints, initialLimit]); // Recharger quand les paramètres changent
 
   const title = useMemo(() => {
     const channel = channels.find(channel => channel.id === channelId);
@@ -178,6 +219,13 @@ export default function IntelligentPage() {
     };
   }, [globalData, title]);
 
+  // Fonction pour réinitialiser les paramètres par défaut
+  const resetToDefaults = () => {
+    setGlobalPoints(Number(process.env.NEXT_PUBLIC_DEFAULT_GLOBAL_POINTS) || 2000);
+    setZoomPoints(Number(process.env.NEXT_PUBLIC_DEFAULT_ZOOM_POINTS) || 3000);
+    setInitialLimit(Number(process.env.NEXT_PUBLIC_DEFAULT_INITIAL_LIMIT) || 100000);
+  };
+
   return (
     <main style={{ maxWidth: 1200, margin: "24px auto", padding: "0 16px" }}>
       <h1 style={{ fontSize: 24, fontWeight: 600, marginBottom: 12 }}>
@@ -192,11 +240,179 @@ export default function IntelligentPage() {
         marginBottom: 16,
         fontSize: 14 
       }}>
-        <strong>Mode Intelligent:</strong> Vue globale ({globalPoints} pts) puis rechargement automatique 
-        avec plus de détails ({zoomPoints} pts) lors du zoom. Alertes automatiques aux bornes du dataset.
+        <strong>Mode Intelligent:</strong> Vue globale ({globalPoints.toLocaleString()} pts) puis rechargement automatique 
+        avec plus de détails ({zoomPoints.toLocaleString()} pts) lors du zoom. Limite initiale: {initialLimit.toLocaleString()} pts.
       </div>
 
       <UploadBox onDone={loadDatasets} />
+
+      {/* Paramètres avancés */}
+      <div style={{ 
+        marginBottom: 16, 
+        padding: "12px", 
+        backgroundColor: "#f8f9fa", 
+        border: "1px solid #dee2e6", 
+        borderRadius: "4px" 
+      }}>
+        <button 
+          onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+          style={{
+            backgroundColor: "transparent",
+            border: "none",
+            color: "#007bff",
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 500
+          }}
+        >
+          {showAdvancedSettings ? "▼" : "▶"} Paramètres avancés
+        </button>
+
+        {showAdvancedSettings && (
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "#555" }}>
+                Points vue globale:
+              </span>
+              <input
+                type="number"
+                value={globalPoints}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  setGlobalPoints(value);
+                }}
+                min={backendConstraints.points.min}
+                max={backendConstraints.points.max}
+                style={{ 
+                  padding: "6px 8px", 
+                  border: validateParam(globalPoints, 'points').isValid ? "1px solid #ddd" : "2px solid #dc3545", 
+                  borderRadius: "3px",
+                  fontSize: 13,
+                  backgroundColor: validateParam(globalPoints, 'points').isValid ? "white" : "#fff5f5"
+                }}
+              />
+              {!validateParam(globalPoints, 'points').isValid && (
+                <span style={{ fontSize: 11, color: "#dc3545", fontWeight: 500 }}>
+                  ⚠️ Doit être entre {backendConstraints.points.min} et {backendConstraints.points.max.toLocaleString()}
+                </span>
+              )}
+              <span style={{ fontSize: 11, color: "#666" }}>
+                Recommandé: 1000-5000
+              </span>
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "#555" }}>
+                Points zoom détaillé:
+              </span>
+              <input
+                type="number"
+                value={zoomPoints}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  setZoomPoints(value);
+                }}
+                min={backendConstraints.points.min}
+                max={backendConstraints.points.max}
+                style={{ 
+                  padding: "6px 8px", 
+                  border: validateParam(zoomPoints, 'points').isValid ? "1px solid #ddd" : "2px solid #dc3545", 
+                  borderRadius: "3px",
+                  fontSize: 13,
+                  backgroundColor: validateParam(zoomPoints, 'points').isValid ? "white" : "#fff5f5"
+                }}
+              />
+              {!validateParam(zoomPoints, 'points').isValid && (
+                <span style={{ fontSize: 11, color: "#dc3545", fontWeight: 500 }}>
+                  ⚠️ Doit être entre {backendConstraints.points.min} et {backendConstraints.points.max.toLocaleString()}
+                </span>
+              )}
+              <span style={{ fontSize: 11, color: "#666" }}>
+                Recommandé: 2000-10000
+              </span>
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "#555" }}>
+                Limite initiale lecture:
+              </span>
+              <input
+                type="number"
+                value={initialLimit}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  setInitialLimit(value);
+                }}
+                min={backendConstraints.limit.min}
+                max={backendConstraints.limit.max}
+                step={10000}
+                style={{ 
+                  padding: "6px 8px", 
+                  border: validateParam(initialLimit, 'limit').isValid ? "1px solid #ddd" : "2px solid #dc3545", 
+                  borderRadius: "3px",
+                  fontSize: 13,
+                  backgroundColor: validateParam(initialLimit, 'limit').isValid ? "white" : "#fff5f5"
+                }}
+              />
+              {!validateParam(initialLimit, 'limit').isValid && (
+                <span style={{ fontSize: 11, color: "#dc3545", fontWeight: 500 }}>
+                  ⚠️ Doit être entre {backendConstraints.limit.min.toLocaleString()} et {backendConstraints.limit.max.toLocaleString()}
+                </span>
+              )}
+              <span style={{ fontSize: 11, color: "#666" }}>
+                Max {backendConstraints.limit.max.toLocaleString()} (limite backend actuelle)
+              </span>
+            </label>
+
+            <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 8 }}>
+              <button
+                onClick={resetToDefaults}
+                style={{
+                  padding: "6px 12px",
+                  backgroundColor: "#6c757d",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "3px",
+                  fontSize: 12,
+                  cursor: "pointer"
+                }}
+              >
+                Réinitialiser
+              </button>
+
+              {/* Indicateur de validation global */}
+              <div style={{
+                padding: "6px 8px",
+                borderRadius: "3px",
+                fontSize: 11,
+                textAlign: "center",
+                fontWeight: 500,
+                backgroundColor: (
+                  validateParam(globalPoints, 'points').isValid && 
+                  validateParam(zoomPoints, 'points').isValid && 
+                  validateParam(initialLimit, 'limit').isValid
+                ) ? "#d4edda" : "#f8d7da",
+                color: (
+                  validateParam(globalPoints, 'points').isValid && 
+                  validateParam(zoomPoints, 'points').isValid && 
+                  validateParam(initialLimit, 'limit').isValid
+                ) ? "#155724" : "#721c24",
+                border: (
+                  validateParam(globalPoints, 'points').isValid && 
+                  validateParam(zoomPoints, 'points').isValid && 
+                  validateParam(initialLimit, 'limit').isValid
+                ) ? "1px solid #c3e6cb" : "1px solid #f5c6cb"
+              }}>
+                {(
+                  validateParam(globalPoints, 'points').isValid && 
+                  validateParam(zoomPoints, 'points').isValid && 
+                  validateParam(initialLimit, 'limit').isValid
+                ) ? "✓ Paramètres valides" : "⚠️ Erreurs détectées"}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Sélection Dataset/Channel */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
@@ -232,7 +448,20 @@ export default function IntelligentPage() {
 
         <button 
           onClick={() => channelId && loadGlobalView(channelId)} 
-          disabled={!channelId || loading}
+          disabled={
+            !channelId || 
+            loading || 
+            !validateParam(globalPoints, 'points').isValid || 
+            !validateParam(initialLimit, 'limit').isValid
+          }
+          style={{
+            opacity: (
+              !channelId || 
+              loading || 
+              !validateParam(globalPoints, 'points').isValid || 
+              !validateParam(initialLimit, 'limit').isValid
+            ) ? 0.6 : 1
+          }}
         >
           {loading ? "Chargement…" : "Recharger Vue Globale"}
         </button>
@@ -277,6 +506,11 @@ export default function IntelligentPage() {
         }}>
           <strong>Vue actuelle:</strong> {globalData.original_points.toLocaleString()} → {globalData.sampled_points.toLocaleString()} points 
           (algorithme {globalData.method})
+          {globalData.original_points > initialLimit && (
+            <span style={{ color: "#ff6b35", marginLeft: 8 }}>
+              ⚠️ Limité à {initialLimit.toLocaleString()} pts (ajustez la limite initiale si nécessaire)
+            </span>
+          )}
         </div>
       )}
 
@@ -285,7 +519,7 @@ export default function IntelligentPage() {
       {loading && <div>Chargement de la vue globale…</div>}
       {plotData && channelId && timeRange && (
         <IntelligentPlotClient
-          key={channelId}    
+          key={`${channelId}-${globalPoints}-${zoomPoints}`}    
           channelId={channelId}
           initialData={plotData}
           timeRange={timeRange}
@@ -305,12 +539,17 @@ export default function IntelligentPage() {
         }}>
           <strong>Comment utiliser :</strong>
           <ul style={{ margin: "8px 0", paddingLeft: "20px" }}>
+            <li>🔧 <strong>Paramètres :</strong> Ajustez les paramètres avancés pour optimiser selon vos fichiers</li>
             <li>🔍 <strong>Zoom :</strong> Cliquez-glissez sur le graphique pour zoomer</li>
             <li>🔄 <strong>Rechargement auto :</strong> Les données sont rechargées automatiquement avec plus de précision</li>
             <li>🏠 <strong>Reset :</strong> Double-clic pour revenir à la vue globale</li>
             <li>🔧 <strong>Reload :</strong> Utilisez le bouton de rechargement dans la barre d'outils</li>
             <li>⚠️ <strong>Alertes :</strong> Notification automatique quand vous atteignez les bornes du dataset</li>
           </ul>
+          <div style={{ marginTop: 8, padding: "6px", backgroundColor: "#fff3cd", borderRadius: "3px", fontSize: 12 }}>
+            <strong>Conseils performance :</strong> Pour les gros fichiers (&gt;1M points), augmentez la limite initiale. 
+            Pour les détails fins, augmentez les points zoom. Pour la fluidité, diminuez les points vue globale.
+          </div>
         </div>
       )}
     </main>
