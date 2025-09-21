@@ -26,6 +26,7 @@ export default function IntelligentPlotClient({
   const [isLoading, setIsLoading] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(0);
   const lastZoomRef = useRef<{ start: number; end: number } | null>(null);
+  const [currentDragMode, setCurrentDragMode] = useState<'zoom' | 'pan' | 'select' | 'lasso'>('zoom');
 
   useEffect(() => {
     setPlotData(initialData);
@@ -35,6 +36,11 @@ export default function IntelligentPlotClient({
   }, [channelId, initialData]);
 
   const handleRelayout = useCallback(async (eventData: any) => {
+    // Détecter changement de dragmode
+    if (eventData.dragmode && eventData.dragmode !== currentDragMode) {
+      setCurrentDragMode(eventData.dragmode);
+    }
+
     // Détecter si c'est un zoom sur l'axe X
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]'] && onZoomReload) {
       const start = Number(eventData['xaxis.range[0]']);
@@ -77,7 +83,7 @@ export default function IntelligentPlotClient({
       setZoomLevel(0);
       lastZoomRef.current = null;
     }
-  }, [onZoomReload, initialData]);
+  }, [onZoomReload, initialData, currentDragMode]);
 
   // Indicateur de statut
   const statusColor = isLoading ? "#ff9800" : (zoomLevel > 0 ? "#4caf50" : "#2196f3");
@@ -148,7 +154,8 @@ export default function IntelligentPlotClient({
             title: { text: plotData.unit || "Valeur" }
           },
           margin: { l: 50, r: 50, t: 50, b: 50 },
-          showlegend: false
+          showlegend: false,
+          dragmode: currentDragMode  
         }}
         useResizeHandler
         style={{ width: "100%", height: "60vh" }}
