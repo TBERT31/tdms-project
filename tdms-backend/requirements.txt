@@ -7,3 +7,6 @@ lttb==0.3.2
 numpy==1.26.4
 pydantic-settings==2.10.1
 clickhouse-driver==0.2.9
+lz4==4.4.4
+zstandard==0.25.0
+clickhouse-cityhash==1.0.2.4
