@@ -1,12 +1,14 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
-import os
 
 class Settings(BaseSettings):
     """Configuration centralisée pour l'application FastAPI."""
-    
-    # Base de données
-    db_url: str = "sqlite:///db.sqlite"
+
+    # Configuration ClickHouse
+    clickhouse_host: str = "localhost"
+    clickhouse_port: int = 9000
+    clickhouse_database: str = "tdms_data"
+    clickhouse_user: str = "tdms_user"
+    clickhouse_password: str = "password"
     
     # Contraintes API
     points_min: int = 10

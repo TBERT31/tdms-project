@@ -11,6 +11,11 @@ services:
       CLICKHOUSE_DB: tdms_data
       CLICKHOUSE_USER: tdms_user
       CLICKHOUSE_PASSWORD: password
+    # Paramètres pour éviter les erreurs au démarrage
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
 
 volumes:
   clickhouse_data:

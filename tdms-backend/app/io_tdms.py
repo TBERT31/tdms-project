@@ -1,13 +1,13 @@
 from nptdms import TdmsFile
 import pandas as pd
-import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
-from pathlib import Path
 import re
+import logging
+from .clickhouse_client import clickhouse_client
 
-# Remplace les caractères interdits Windows et nettoie la fin
+logger = logging.getLogger(__name__)
+
 def safe_filename(name: str) -> str:
+    """Remplace les caractères interdits Windows et nettoie la fin"""
     # Interdits: < > : " / \ | ? *  + contrôles 0x00-0x1F
     name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", name)
     # Windows n'accepte pas "." ou " " final
@@ -15,50 +15,88 @@ def safe_filename(name: str) -> str:
     # Longueurs de chemin: on coupe large pour éviter 260+ chars
     return name[:200]
 
-def tdms_to_parquet(tdms_path: str, out_dir: str):
+def tdms_to_clickhouse(tdms_path: str, dataset_id: int, filename: str):
+    """
+    Convertit un fichier TDMS directement vers ClickHouse unifié
+    """
+    logger.info(f"[TDMS→ClickHouse] Début conversion: {filename}")
+    
     tdms = TdmsFile.read(tdms_path)
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    meta = []
+    
+    channels_data = []
+    next_channel_id = clickhouse_client.get_next_channel_id()
+    
     for group in tdms.groups():
         for ch in group.channels():
-            # 1) valeurs
+            logger.info(f"[TDMS→ClickHouse] Traitement: {group.name}/{ch.name}")
+            
+            # 1) Récupération des valeurs
             values = ch[:]
-            df = pd.DataFrame({"value": values})
-
-            # 2) temps si dispo
+            if len(values) == 0:
+                logger.warning(f"Channel {group.name}/{ch.name} vide, ignoré")
+                continue
+            
+            # 2) Gestion du temps
             has_time = False
+            timestamps = None
+            
             try:
                 t = ch.time_track()
                 if t is not None:
-                    df.insert(0, "time", pd.to_datetime(t))
+                    # Conversion en timestamps datetime Python pour ClickHouse
+                    timestamps = pd.to_datetime(t).to_pydatetime().tolist()
                     has_time = True
-            except Exception:
-                # fallback: index échantillon
-                df.insert(0, "time", np.arange(len(df)))
-
-            # 3) unité si dispo
-            unit = ch.properties.get("NI_UnitDescription") or ch.properties.get("unit_string")
-
-            # 4) nom de fichier PARFAITEMENT SAFE pour Windows
-            g = safe_filename(group.name)
-            c = safe_filename(ch.name)
-            pq_path = out / f"{g}__{c}.parquet"
-
-            # (debug utile) affiche le chemin avant écriture
-            print(f"[TDMS→Parquet] Écriture: {pq_path}")
-
-            # 5) écriture Parquet (ZSTD)
-            table = pa.Table.from_pandas(df, preserve_index=False)
-            pq.write_table(table, str(pq_path), compression="zstd")
-
-            meta.append({
-                "group": group.name,
-                "channel": ch.name,
-                "rows": len(df),
-                "parquet": str(pq_path),
-                "has_time": has_time,
+                    logger.info(f"Channel avec timestamps: {len(timestamps)} points")
+            except Exception as e:
+                logger.info(f"Pas de timestamps pour {ch.name}: {e}")
+            
+            # Fallback: indices numériques
+            if not has_time:
+                timestamps = list(range(len(values)))
+                logger.info(f"Channel avec indices: {len(timestamps)} points")
+            
+            # 3) Récupération de l'unité
+            unit = ch.properties.get("NI_UnitDescription") or ch.properties.get("unit_string") or ""
+            
+            # 4) Préparation des données pour insertion
+            channel_data = {
+                "channel_id": next_channel_id,
+                "group_name": group.name,
+                "channel_name": ch.name,
                 "unit": unit,
-            })
+                "has_time": has_time,
+                "timestamps": timestamps,
+                "values": values.tolist(),
+                "n_rows": len(values)
+            }
+            
+            channels_data.append(channel_data)
+            next_channel_id += 1
+    
+    # 5) Insertion batch dans ClickHouse
+    if channels_data:
+        try:
+            clickhouse_client.insert_dataset_data(dataset_id, filename, channels_data)
+            logger.info(f"[TDMS→ClickHouse] Dataset {dataset_id} inséré: {len(channels_data)} channels")
+            
+            # Optimisation après insertion
+            clickhouse_client.optimize_tables()
+            
+        except Exception as e:
+            logger.error(f"Erreur insertion ClickHouse dataset {dataset_id}: {e}")
+            raise
+    
+    # 6) Métadonnées de réponse (compatibilité avec l'ancien format)
+    meta = []
+    for channel_data in channels_data:
+        meta.append({
+            "channel_id": channel_data["channel_id"],
+            "group": channel_data["group_name"],
+            "channel": channel_data["channel_name"],
+            "rows": channel_data["n_rows"],
+            "has_time": channel_data["has_time"],
+            "unit": channel_data["unit"],
+        })
+    
+    logger.info(f"[TDMS→ClickHouse] Terminé: {len(meta)} channels convertis")
     return meta

@@ -91,7 +91,7 @@ curl.exe -F "file=@week_signals.tdms" http://localhost:8000/ingest
 ```
 cd tdms-backend
 .\.venv\Scripts\Activate.ps1
-python .\make_sweeps_tdms.py
+python .\make_sweep_tdms.py
 ```
 
 > Une fois le fichier `tdms-backend/sweeps.tdms` généré

@@ -4,15 +4,16 @@ interface Dataset {
   id: number;
   filename: string;
   created_at: string;
+  total_points?: number;
 }
 
 interface Channel {
   id: number;
+  channel_id: number; 
   dataset_id: number;
   group_name: string;
   channel_name: string;
   n_rows: number;
-  parquet_path: string;
   has_time: boolean;
   unit?: string;
 }
@@ -71,7 +72,8 @@ export function useTdmsData() {
       const channels = await response.json();
       setChannels(channels);
       if (channels?.length) {
-        setChannelId(channels[0].id);
+        // Utiliser channel_id au lieu de id pour la compatibilité ClickHouse
+        setChannelId(channels[0].id || channels[0].channel_id);
       } else {
         setChannelId(null);
       }

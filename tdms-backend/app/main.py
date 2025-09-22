@@ -1,36 +1,28 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import SQLModel, create_engine, Session, select
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import numpy as np
-import pyarrow.parquet as pq
 from .lttb import smart_downsample_production
-import pyarrow as pa
-import pyarrow.compute as pc
 from datetime import datetime as dt
-import json
+import logging
 
-from .models import Dataset, Channel
-from .io_tdms import tdms_to_parquet
-from .config import settings, get_api_constraints  # Import de la configuration
+from .io_tdms import tdms_to_clickhouse
+from .config import settings, get_api_constraints
+from .clickhouse_client import clickhouse_client
 
-# Utilisation de la configuration centralisée
-DB_URL = settings.db_url
-engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
-SQLModel.metadata.create_all(engine)
+# Configuration logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="TDMS → Parquet API")
+app = FastAPI(title="TDMS → ClickHouse API")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
-
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 
 # Route pour exposer les contraintes au frontend
 @app.get("/api/constraints")
@@ -40,50 +32,52 @@ def get_constraints():
 
 @app.post("/ingest")
 async def ingest(file: UploadFile = File(...)):
+    """Upload et conversion TDMS vers ClickHouse unifié"""
+    
     # Sauvegarde temporaire
     tmp_path = Path("tmp") / f"{datetime.utcnow().timestamp()}_{file.filename}"
     tmp_path.parent.mkdir(exist_ok=True)
-    content = await file.read()
-    tmp_path.write_bytes(content)
+    
+    try:
+        content = await file.read()
+        tmp_path.write_bytes(content)
 
-    # Convertit en Parquet + métadonnées
-    out_dir = DATA_DIR / tmp_path.stem
-    meta = tdms_to_parquet(str(tmp_path), str(out_dir))
-    tmp_path.unlink()
-
-    # Enregistre en DB
-    # ⬇️ IMPORTANT: expire_on_commit=False pour éviter le DetachedInstanceError
-    with Session(engine, expire_on_commit=False) as s:
-        ds = Dataset(filename=file.filename)
-        s.add(ds)
-        s.commit()
-        s.refresh(ds)
-        ds_id = ds.id  # on le capture tout de suite
-
-        for m in meta:
-            ch = Channel(
-                dataset_id=ds_id,
-                group_name=m["group"],
-                channel_name=m["channel"],
-                n_rows=m["rows"],
-                parquet_path=m["parquet"],
-                has_time=m["has_time"],
-                unit=m["unit"],
-            )
-            s.add(ch)
-        s.commit()
-
-    return {"dataset_id": ds_id, "channels": meta}
+        # Génération d'un dataset_id unique (timestamp-based)
+        dataset_id = int(datetime.utcnow().timestamp() * 1000)  # ID unique basé sur timestamp
+        
+        logger.info(f"Début conversion TDMS → ClickHouse pour dataset {dataset_id}")
+        
+        # Conversion directe TDMS → ClickHouse
+        meta = tdms_to_clickhouse(str(tmp_path), dataset_id, file.filename)
+        
+        logger.info(f"Ingestion terminée: {len(meta)} channels")
+        return {"dataset_id": dataset_id, "channels": meta}
+        
+    except Exception as e:
+        logger.error(f"Erreur ingestion: {e}")
+        raise HTTPException(500, f"Erreur ingestion: {str(e)}")
+    finally:
+        # Nettoyage du fichier temporaire
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 @app.get("/datasets")
 def list_datasets():
-    with Session(engine) as s:
-        return s.exec(select(Dataset)).all()
+    """Liste tous les datasets depuis ClickHouse"""
+    try:
+        return clickhouse_client.get_datasets()
+    except Exception as e:
+        logger.error(f"Erreur récupération datasets: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
 @app.get("/datasets/{dataset_id}/channels")
 def list_channels(dataset_id: int):
-    with Session(engine) as s:
-        return s.exec(select(Channel).where(Channel.dataset_id == dataset_id)).all()
+    """Liste les channels d'un dataset depuis ClickHouse"""
+    try:
+        return clickhouse_client.get_channels(dataset_id)
+    except Exception as e:
+        logger.error(f"Erreur récupération channels: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
 @app.get("/window")
 def get_window(
@@ -94,112 +88,205 @@ def get_window(
     end_sec: float | None = Query(None, description="fenêtre relative en secondes"),
     relative: bool = Query(False, description="temps en secondes depuis le début"),
     points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
-    method: str = Query("lttb", description="lttb|uniform - LTTB par défaut"),
+    method: str = Query("lttb", description="lttb|uniform|clickhouse - LTTB par défaut"),
 ):
-    with Session(engine) as s:
-        ch = s.get(Channel, channel_id)
-        if not ch:
+    """Endpoint window refactorisé pour ClickHouse unifié"""
+    
+    try:
+        # 1. Récupération des métadonnées temporelles
+        time_range = clickhouse_client.get_time_range(channel_id)
+        if "error" in time_range:
             raise HTTPException(404, "Channel not found")
-
-    df = pq.read_table(ch.parquet_path).to_pandas()
-
-    if ch.has_time:
-        df["time"] = pd.to_datetime(df["time"])
-
-        if relative:
-            df["sec"] = (df["time"] - df["time"].iloc[0]).dt.total_seconds()
-
-            # Filtrage temporel
-            if start_sec is not None:
-                df = df[df["sec"] >= float(start_sec)]
-            if end_sec is not None:
-                df = df[df["sec"] <= float(end_sec)]
-
-            df_clean = df[["sec", "value"]].rename(columns={"sec": "time"})
+        
+        has_time = time_range["has_time"]
+        
+        # 2. Conversion des paramètres temporels
+        start_timestamp = None
+        end_timestamp = None
+        
+        if has_time:
+            if start:
+                start_timestamp = dt.fromisoformat(start.replace('Z', '+00:00')).timestamp()
+            elif start_sec is not None and "min_timestamp" in time_range:
+                start_timestamp = time_range["min_timestamp"] + start_sec
             
-            # Downsampling avec choix de méthode
-            if len(df_clean) > points:
-                if method == "lttb":
-                    df_sampled = smart_downsample_production(df_clean, points)
-                else:  # uniform
-                    bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
-                    df_sampled = df_clean.iloc[bins]
-            else:
-                df_sampled = df_clean
+            if end:
+                end_timestamp = dt.fromisoformat(end.replace('Z', '+00:00')).timestamp()
+            elif end_sec is not None and "min_timestamp" in time_range:
+                end_timestamp = time_range["min_timestamp"] + end_sec
+        else:
+            if start:
+                start_timestamp = float(start)
+            if end:
+                end_timestamp = float(end)
 
+        # 3. Récupération des données depuis ClickHouse
+        if method == "clickhouse":
+            # Downsampling natif ClickHouse (ultra-rapide)
+            df = clickhouse_client.get_downsampled_data(
+                channel_id=channel_id,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                points=points
+            )
+            original_points = points  # Approximation
+        else:
+            # Récupération complète puis LTTB/uniform
+            df = clickhouse_client.get_channel_data(
+                channel_id=channel_id,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                limit=settings.default_limit
+            )
+            
+            original_points = len(df)
+            
+            # Downsampling avec LTTB/uniform si nécessaire
+            if len(df) > points:
+                if method == "lttb":
+                    df = smart_downsample_production(df, points)
+                else:  # uniform
+                    bins = np.linspace(0, len(df)-1, points, dtype=int)
+                    df = df.iloc[bins]
+
+        # 4. Formatage de la réponse
+        if len(df) == 0:
             return {
-                "x": df_sampled["time"].astype(float).tolist(),
-                "y": df_sampled["value"].astype(float).tolist(),
-                "unit": ch.unit,
-                "has_time": True,
-                "x_unit": "s",
-                "method": method,
-                "original_points": len(df),
-                "returned_points": len(df_sampled)
+                "x": [], "y": [], "unit": time_range.get("unit", ""), "has_time": has_time,
+                "method": method, "original_points": 0, "returned_points": 0
             }
 
-        # Mode datetimes absolus
-        if start: df = df[df["time"] >= pd.to_datetime(start)]
-        if end:   df = df[df["time"] <= pd.to_datetime(end)]
+        # Récupération de l'unité depuis les métadonnées
+        unit_result = clickhouse_client.client.execute(
+            'SELECT unit FROM channels WHERE channel_id = %(channel_id)s LIMIT 1',
+            {'channel_id': channel_id}
+        )
+        unit = unit_result[0][0] if unit_result else ""
+
+        if relative and has_time:
+            # Mode relatif en secondes depuis le début
+            min_time = df["time"].min()
+            df["time"] = df["time"] - min_time
         
-        df_clean = df[["time", "value"]]
-        
-        if len(df_clean) > points:
-            if method == "lttb":
-                df_sampled = smart_downsample_production(df_clean, points)
-            else:  # uniform
-                bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
-                df_sampled = df_clean.iloc[bins]
-        else:
-            df_sampled = df_clean
-            
         return {
-            "x": df_sampled["time"].astype("datetime64[ms]").dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ").tolist(),
-            "y": df_sampled["value"].astype(float).tolist(),
-            "unit": ch.unit,
-            "has_time": True,
+            "x": df["time"].astype(float if has_time else int).tolist(),
+            "y": df["value"].astype(float).tolist(),
+            "unit": unit,
+            "has_time": has_time,
+            "x_unit": "s" if relative else "",
             "method": method,
-            "original_points": len(df),
-            "returned_points": len(df_sampled)
+            "original_points": original_points,
+            "returned_points": len(df)
         }
 
-    # Cas sans horodatage (une seule fois)
-    df_clean = df[["time", "value"]]
-    
-    if start: df_clean = df_clean[df_clean["time"] >= int(start)]
-    if end:   df_clean = df_clean[df_clean["time"] <= int(end)]
-    
-    if len(df_clean) > points:
-        if method == "lttb":
-            df_sampled = smart_downsample_production(df_clean, points)
-        else:  # uniform
-            bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
-            df_sampled = df_clean.iloc[bins]
-    else:
-        df_sampled = df_clean
-    
-    return {
-        "x": df_sampled["time"].astype(int).tolist(),
-        "y": df_sampled["value"].astype(float).tolist(),
-        "unit": ch.unit,
-        "has_time": False,
-        "method": method,
-        "original_points": len(df),
-        "returned_points": len(df_sampled)
-    }
+    except Exception as e:
+        logger.error(f"Erreur endpoint window: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
-@app.get("/dataset_meta")
-def dataset_meta(dataset_id: int):
-    # On récupère UN canal pour retrouver le dossier "data/<stem>"
-    with Session(engine) as s:
-        ch = s.exec(select(Channel).where(Channel.dataset_id == dataset_id)).first()
-        if not ch:
-            raise HTTPException(404, "Dataset not found")
-    meta_path = Path(ch.parquet_path).parent / "_meta.json"
-    if not meta_path.exists():
-        # pas de meta.json -> renvoyer quelque chose de minimal
-        return {"file_properties": {}, "group_properties": {}, "channels": []}
-    return json.loads(meta_path.read_text(encoding="utf-8"))
+@app.get("/get_window_filtered")
+def get_window_filtered(
+    channel_id: int = Query(...),
+    start_timestamp: float | None = Query(None, description="Timestamp Unix de début"),
+    end_timestamp: float | None = Query(None, description="Timestamp Unix de fin"), 
+    cursor: float | None = Query(None, description="Curseur temporel pour pagination"),
+    limit: int = Query(settings.default_limit, ge=settings.limit_min, le=settings.limit_max),
+    points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
+    method: str = Query("lttb", description="lttb|uniform|clickhouse - LTTB par défaut"),
+):
+    """Endpoint window filtré optimisé ClickHouse"""
+    
+    try:
+        # 1. Récupération métadonnées
+        time_range = clickhouse_client.get_time_range(channel_id)
+        if "error" in time_range:
+            raise HTTPException(404, "Channel not found")
+
+        # 2. Gestion curseur pour pagination
+        if cursor is not None:
+            start_timestamp = cursor
+        
+        # 3. Récupération optimisée depuis ClickHouse
+        if method == "clickhouse":
+            # Downsampling natif ultra-rapide
+            df = clickhouse_client.get_downsampled_data(
+                channel_id=channel_id,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                points=points
+            )
+            original_points = points  # Approximation
+            has_more = False
+            next_cursor = None
+            
+        else:
+            # Récupération avec limite puis downsampling
+            df = clickhouse_client.get_channel_data(
+                channel_id=channel_id,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                limit=limit
+            )
+            
+            original_points = len(df)
+            has_more = len(df) >= limit
+            
+            # Downsampling si nécessaire
+            if len(df) > points:
+                if method == "lttb":
+                    df = smart_downsample_production(df, points)
+                else:  # uniform
+                    bins = np.linspace(0, len(df)-1, points, dtype=int)
+                    df = df.iloc[bins]
+            
+            # Calcul next_cursor
+            next_cursor = float(df["time"].iloc[-1]) if len(df) > 0 and has_more else None
+
+        # 4. Récupération de l'unité
+        unit_result = clickhouse_client.client.execute(
+            'SELECT unit FROM channels WHERE channel_id = %(channel_id)s LIMIT 1',
+            {'channel_id': channel_id}
+        )
+        unit = unit_result[0][0] if unit_result else ""
+
+        # 5. Réponse formatée
+        if len(df) == 0:
+            return {
+                "x": [], "y": [], "unit": unit, "has_time": time_range["has_time"],
+                "original_points": 0, "sampled_points": 0,
+                "has_more": False, "next_cursor": None,
+                "method": method, "performance": {"optimization": "clickhouse_native"}
+            }
+
+        return {
+            "x": df["time"].astype(float if time_range["has_time"] else int).tolist(),
+            "y": df["value"].astype(float).tolist(),
+            "unit": unit,
+            "has_time": time_range["has_time"],
+            "original_points": original_points,
+            "sampled_points": len(df),
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+            "method": method,
+            "performance": {
+                "optimization": "clickhouse_native_query",
+                "filtered_points": original_points,
+                "limited_points": len(df)
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Erreur window filtré: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
+
+@app.get("/channels/{channel_id}/time_range")
+def get_channel_time_range(channel_id: int):
+    """Range temporel depuis ClickHouse unifié"""
+    
+    try:
+        return clickhouse_client.get_time_range(channel_id)
+    except Exception as e:
+        logger.error(f"Erreur time range: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
 @app.get("/multi_window")
 def multi_window(
@@ -207,213 +294,123 @@ def multi_window(
     points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
     agg: str = Query("mean", description="mean|max|min")
 ):
+    """Multi-channel depuis ClickHouse avec agrégation"""
+    
     ids = [int(x) for x in channel_ids.split(",") if x.strip()]
     series = []
 
-    with Session(engine) as s:
+    try:
         for cid in ids:
-            ch = s.get(Channel, cid)
-            if not ch:
+            # Récupération des métadonnées
+            meta_result = clickhouse_client.client.execute('''
+                SELECT group_name, channel_name, has_time, unit
+                FROM channels 
+                WHERE channel_id = %(channel_id)s 
+                LIMIT 1
+            ''', {"channel_id": cid})
+            
+            if not meta_result:
                 continue
-            df = pq.read_table(ch.parquet_path).to_pandas()
-
+            
+            group_name, channel_name, has_time, unit = meta_result[0]
+            
+            # Récupération depuis ClickHouse
+            df = clickhouse_client.get_channel_data(
+                channel_id=cid,
+                limit=settings.default_limit
+            )
+            
+            if len(df) == 0:
+                continue
+            
+            # Downsampling avec agrégation
             if len(df) > points:
                 bins = np.linspace(0, len(df)-1, points+1, dtype=int)
-                take = []
+                aggregated = []
+                
                 for i in range(len(bins)-1):
-                    seg = df.iloc[bins[i]:bins[i+1]]
-                    if len(seg) == 0:
+                    segment = df.iloc[bins[i]:bins[i+1]]
+                    if len(segment) == 0:
                         continue
+                    
                     if agg == "max":
-                        row = seg.loc[seg["value"].idxmax()]
+                        row = segment.loc[segment["value"].idxmax()]
                     elif agg == "min":
-                        row = seg.loc[seg["value"].idxmin()]
-                    else:
-                        row = seg.iloc[[0]].assign(value=seg["value"].mean()).iloc[0]
-                    take.append(row)
-                df = pd.DataFrame(take)
+                        row = segment.loc[segment["value"].idxmin()]
+                    else:  # mean
+                        row = segment.iloc[0].copy()
+                        row["value"] = segment["value"].mean()
+                    
+                    aggregated.append(row)
+                
+                df = pd.DataFrame(aggregated)
 
-            if ch.has_time:
-                x = pd.to_datetime(df["time"]).astype("datetime64[ms]").dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ").tolist()
+            # Formatage des timestamps
+            if has_time:
+                x = df["time"].astype(float).tolist()
             else:
                 x = df["time"].astype(int).tolist()
 
+            # Récupération dataset_id pour l'affichage
+            dataset_result = clickhouse_client.client.execute('''
+                SELECT dataset_id FROM channels 
+                WHERE channel_id = %(channel_id)s LIMIT 1
+            ''', {"channel_id": cid})
+            
+            dataset_id = dataset_result[0][0] if dataset_result else 0
+
             series.append({
-                "name": f"{ch.group_name} / {ch.channel_name} (ds{ch.dataset_id})",
+                "name": f"{group_name} / {channel_name} (ds{dataset_id})",
                 "x": x,
                 "y": df["value"].astype(float).tolist()
             })
 
-    return {"series": series}
-
-@app.get("/get_window_filtered")
-def get_window_filtered(
-    channel_id: int = Query(...),
-    # Fenêtrage temporel avec timestamps Unix (plus efficace)
-    start_timestamp: float | None = Query(None, description="Timestamp Unix de début (secondes)"),
-    end_timestamp: float | None = Query(None, description="Timestamp Unix de fin (secondes)"), 
-    # Pagination avec curseur (plus efficace qu'offset)
-    cursor: float | None = Query(None, description="Curseur temporel pour pagination"),
-    limit: int = Query(settings.default_limit, ge=settings.limit_min, le=settings.limit_max),
-    # Downsampling
-    points: int = Query(settings.default_points, ge=settings.points_min, le=settings.points_max),
-    method: str = Query("lttb", description="lttb|uniform - LTTB par défaut"),
-):
-    """
-    Route optimisée avec fenêtrage strict PyArrow.
-    
-    Avantages vs /window:
-    - Filtrage AVANT lecture complète (PyArrow filters)
-    - Pagination par curseur temporel (plus efficace)
-    - Limitation précoce pour éviter surcharge mémoire
-    - Compatible LTTB
-    
-    Usage:
-    1. Appel initial: /window_v2?channel_id=1&start_timestamp=1640995200&points=2000
-    2. Pagination: utiliser next_cursor retourné
-    """
-    
-    # 1. Récupération du channel
-    with Session(engine) as s:
-        ch = s.get(Channel, channel_id)
-        if not ch:
-            raise HTTPException(404, "Channel not found")
-    
-    # 2. Construction des filtres PyArrow (TRÈS EFFICACE)
-    filters = []
-    
-    # Filtrage temporel si le channel a des timestamps
-    if ch.has_time:
-        if start_timestamp is not None:
-            # Convertir timestamp Unix en format PyArrow
-            start_ts = pa.scalar(int(start_timestamp * 1_000_000), type=pa.timestamp('us'))
-            filters.append(('time', '>=', start_ts))
+        return {"series": series}
         
-        if end_timestamp is not None:
-            end_ts = pa.scalar(int(end_timestamp * 1_000_000), type=pa.timestamp('us'))
-            filters.append(('time', '<=', end_ts))
-        
-        # Curseur pour pagination efficace
-        if cursor is not None:
-            cursor_ts = pa.scalar(int(cursor * 1_000_000), type=pa.timestamp('us'))
-            filters.append(('time', '>', cursor_ts))
-    else:
-        # Cas sans timestamps (index numérique)
-        if start_timestamp is not None:
-            filters.append(('time', '>=', int(start_timestamp)))
-        if end_timestamp is not None:
-            filters.append(('time', '<=', int(end_timestamp)))
-        if cursor is not None:
-            filters.append(('time', '>', int(cursor)))
-    
-    # 3. Lecture optimisée avec PyArrow (FILTRAGE PUSH-DOWN)
-    try:
-        if filters:
-            # Lecture avec filtres (très efficace, ne lit que les données nécessaires)
-            table = pq.read_table(
-                ch.parquet_path,
-                columns=['time', 'value'], # Seulement les colonnes nécessaires
-                filters=filters,
-                use_threads=True # Parallélisation
-            )
-        else:
-            # Lecture complète si pas de filtres
-            table = pq.read_table(
-                ch.parquet_path,
-                columns=['time', 'value']
-            )
     except Exception as e:
-        raise HTTPException(500, f"Erreur lecture Parquet: {str(e)}")
-    
-    # 4. Limitation précoce pour éviter surcharge mémoire
-    original_count = len(table)
-    has_more = False
-    
-    if original_count > limit:
-        # Trier par temps et prendre les premiers `limit` points
-        if ch.has_time:
-            indices = pc.sort_indices(table['time'])
-        else:
-            indices = pc.sort_indices(table['time'])
-        
-        table = table.take(indices.slice(0, limit))
-        has_more = True
-        limited_count = limit
-    else:
-        limited_count = original_count
-    
-    # 5. Conversion en DataFrame pour LTTB
-    if len(table) == 0:
-        return {
-            "x": [], "y": [], "unit": ch.unit, "has_time": ch.has_time,
-            "original_points": 0, "sampled_points": 0, 
-            "has_more": False, "next_cursor": None,
-            "method": method, "performance": {"filtered_points": 0, "limited_points": 0}
-        }
-    
-    df = table.to_pandas()
-    
-    # 6. Préparation pour LTTB
-    if ch.has_time:
-        # Convertir timestamps en float pour LTTB
-        df['time_float'] = df['time'].astype('int64') / 1_000_000  # Unix seconds
-        df_clean = df[['time_float', 'value']].rename(columns={'time_float': 'time'})
-    else:
-        df_clean = df[['time', 'value']]
-    
-    # 7. Downsampling avec LTTB (algorithme éprouvé)
-    if len(df_clean) > points:
-        if method == "lttb":
-            df_sampled = smart_downsample_production(df_clean, points)
-        else:  # uniform
-            bins = np.linspace(0, len(df_clean)-1, points, dtype=int)
-            df_sampled = df_clean.iloc[bins]
-    else:
-        df_sampled = df_clean
-    
-    # 8. Calcul du curseur suivant pour pagination
-    next_cursor = None
-    if has_more and len(df_sampled) > 0:
-        # Utiliser le dernier timestamp comme curseur
-        next_cursor = float(df_sampled['time'].iloc[-1])
-    
-    # 9. Préparation de la réponse
-    if ch.has_time:
-        # Retourner en timestamps Unix pour uniformité
-        x_data = df_sampled['time'].astype(float).tolist()
-    else:
-        x_data = df_sampled['time'].astype(int).tolist()
-    
-    return {
-        "x": x_data,
-        "y": df_sampled['value'].astype(float).tolist(),
-        "unit": ch.unit,
-        "has_time": ch.has_time,
-        "original_points": original_count,
-        "sampled_points": len(df_sampled),
-        "has_more": has_more,
-        "next_cursor": next_cursor,
-        "method": method,
-        "performance": {
-            "filtered_points": original_count,
-            "limited_points": limited_count,
-            "optimization": "pyarrow_pushdown_filtering"
-        }
-    }
+        logger.error(f"Erreur multi_window: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
-# Route utilitaire pour conversion timestamp
+@app.get("/dataset_meta")
+def dataset_meta(dataset_id: int):
+    """Métadonnées dataset depuis ClickHouse unifié"""
+    
+    try:
+        # Récupération des channels du dataset
+        channels = clickhouse_client.get_channels(dataset_id)
+        
+        if not channels:
+            raise HTTPException(404, "Dataset not found")
+        
+        # Génération de métadonnées depuis ClickHouse
+        channel_info = []
+        for ch in channels:
+            channel_info.append({
+                "channel_id": ch["channel_id"],
+                "group": ch["group_name"],
+                "channel": ch["channel_name"],
+                "rows": ch["n_rows"],
+                "has_time": ch["has_time"],
+                "unit": ch["unit"]
+            })
+        
+        return {
+            "dataset_id": dataset_id,
+            "channels": channel_info,
+            "total_channels": len(channels),
+            "storage": "clickhouse_unified"
+        }
+        
+    except Exception as e:
+        logger.error(f"Erreur dataset_meta: {e}")
+        raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
+
 @app.get("/timestamp_helpers")
 def timestamp_helpers(
-    iso_date: str | None = Query(None, description="Date ISO à convertir (ex: 2024-01-01T10:00:00Z)"),
+    iso_date: str | None = Query(None, description="Date ISO à convertir"),
     unix_timestamp: float | None = Query(None, description="Timestamp Unix à convertir"),
 ):
-    """
-    Utilitaire pour conversion entre formats de timestamp.
-    
-    Exemples:
-    - /timestamp_helpers?iso_date=2024-01-01T10:00:00Z
-    - /timestamp_helpers?unix_timestamp=1704106800
-    """
+    """Utilitaires timestamp (inchangé)"""
     
     result = {}
     
@@ -431,7 +428,6 @@ def timestamp_helpers(
         except (ValueError, OSError) as e:
             result["unix_error"] = f"Timestamp invalide: {str(e)}"
     
-    # Exemples pour aider l'utilisateur
     now = dt.now()
     result["examples"] = {
         "current_unix": now.timestamp(),
@@ -441,64 +437,53 @@ def timestamp_helpers(
     
     return result
 
-# Route de métadonnées temporelles pour un channel
-@app.get("/channels/{channel_id}/time_range")
-def get_channel_time_range(channel_id: int):
-    """
-    Récupère la plage temporelle d'un channel (min/max timestamps).
-    Utile pour déterminer les bornes.
-    """
-    
-    with Session(engine) as s:
-        ch = s.get(Channel, channel_id)
-        if not ch:
-            raise HTTPException(404, "Channel not found")
+@app.get("/health")
+def health_check():
+    """Vérification santé ClickHouse"""
     
     try:
-        # Lecture optimisée : seulement la colonne time
-        table = pq.read_table(ch.parquet_path, columns=['time'])
+        # Test ClickHouse
+        clickhouse_client.client.execute('SELECT 1')
+        clickhouse_status = "OK"
         
-        if len(table) == 0:
-            return {
-                "channel_id": channel_id,
-                "has_time": ch.has_time,
-                "error": "Aucune donnée dans le channel"
-            }
+        # Test table existence
+        expected_tables = {'datasets', 'channels', 'sensor_data'}
+        tables_result = clickhouse_client.client.execute('SHOW TABLES')
+        found_tables = {t[0] for t in tables_result}
+        table_count = len(expected_tables.intersection(found_tables))
         
-        if ch.has_time:
-            # Calcul min/max avec PyArrow (très efficace)
-            time_col = table['time']
-            min_time = pc.min(time_col).as_py()
-            max_time = pc.max(time_col).as_py()
-            
-            # Conversion en timestamps Unix
-            min_unix = min_time.timestamp() if min_time else None
-            max_unix = max_time.timestamp() if max_time else None
-            
-            return {
-                "channel_id": channel_id,
-                "has_time": True,
-                "min_timestamp": min_unix,
-                "max_timestamp": max_unix,
-                "min_iso": min_time.isoformat() + "Z" if min_time else None,
-                "max_iso": max_time.isoformat() + "Z" if max_time else None,
-                "total_points": len(table),
-                "usage": f"Utilisez start_timestamp entre {min_unix} et {max_unix}"
-            }
-        else:
-            # Données indexées numériquement
-            time_col = table['time']
-            min_idx = pc.min(time_col).as_py()
-            max_idx = pc.max(time_col).as_py()
-            
-            return {
-                "channel_id": channel_id,
-                "has_time": False,
-                "min_index": min_idx,
-                "max_index": max_idx,
-                "total_points": len(table),
-                "usage": f"Utilisez start_timestamp entre {min_idx} et {max_idx}"
-            }
-    
     except Exception as e:
-        raise HTTPException(500, f"Erreur lecture métadonnées: {str(e)}")
+        clickhouse_status = f"ERROR: {str(e)}"
+        table_count = 0
+    
+    return {
+        "status": "healthy" if clickhouse_status == "OK" and table_count == 3 else "degraded",
+        "clickhouse": clickhouse_status,
+        "tables": f"{table_count}/3 expected tables found: {found_tables}",
+        "architecture": "100% ClickHouse",
+        "timestamp": dt.utcnow().isoformat() + "Z"
+    }
+
+@app.delete("/datasets/{dataset_id}")
+def delete_dataset(dataset_id: int):
+    """Suppression complète dataset depuis ClickHouse"""
+    
+    try:
+        # Vérifier que le dataset existe
+        channels = clickhouse_client.get_channels(dataset_id)
+        if not channels:
+            raise HTTPException(404, "Dataset not found")
+        
+        # Suppression ClickHouse
+        clickhouse_client.delete_dataset(dataset_id)
+        
+        logger.info(f"Dataset {dataset_id} supprimé complètement")
+        return {
+            "message": f"Dataset {dataset_id} supprimé", 
+            "channels_deleted": len(channels),
+            "storage": "clickhouse_unified"
+        }
+        
+    except Exception as e:
+        logger.error(f"Erreur suppression dataset {dataset_id}: {e}")
+        raise HTTPException(500, f"Erreur suppression: {str(e)}")
