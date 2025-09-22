@@ -108,62 +108,46 @@ class ClickHouseClientV2:
     # ----------------------
     # Inserts optimisés
     # ----------------------
-        def _insert_sensor_data_columnar(self, rows_dict: Dict[str, Any], chunk_rows: int = 1_000_000):
-            """
-            Insert columnar (beaucoup plus rapide que liste de tuples).
-            rows_dict contient les colonnes:
-            ["dataset_id","channel_id","timestamp","sample_index","value","is_time_series"]
-            Valeurs: pandas Series / numpy arrays / listes (mêmes longueurs).
-            L'envoi est chunké pour limiter l'empreinte mémoire.
-            """
-            # Longueur cohérente ?
-            lengths = {len(v) for v in rows_dict.values()}
-            if len(lengths) != 1:
-                raise ValueError("Toutes les colonnes doivent avoir la même longueur")
-            n = lengths.pop()
-            if n == 0:
-                return
+    def _insert_sensor_data_columnar(
+        self,
+        columns: List[str],
+        rows_dict: Dict[str, Any],
+        chunk_rows: int = 1_000_000
+    ):
+        """
+        Insert columnar générique.
+        - columns: ordre des colonnes à insérer.
+        - rows_dict: dict {col: sequence} avec mêmes longueurs.
+        - chunk_rows: taille de chunk (baisse à 250_000 si RAM limitée).
+        """
+        # contrôle longueurs
+        lengths = {len(rows_dict[c]) for c in columns}
+        if len(lengths) != 1:
+            raise ValueError("Toutes les colonnes doivent avoir la même longueur pour l'insert columnar")
+        n = lengths.pop()
+        if n == 0:
+            return
 
-            def _to_list(x):
-                # Le driver (0.2.9) veut des list/tuple en columnar, pas des ndarrays.
-                if isinstance(x, pd.Series):
-                    return x.tolist()
-                if isinstance(x, np.ndarray):
-                    return x.tolist()
-                # déjà liste/tuple
-                return x
+        def _to_list(x):
+            if isinstance(x, pd.Series) or isinstance(x, np.ndarray):
+                return x.tolist()
+            return x  # list/tuple déjà OK
 
-            # Envoi par morceaux
-            for start in range(0, n, chunk_rows):
-                end = min(start + chunk_rows, n)
-                # Slice chaque colonne puis convertit en list
-                col_dataset_id = _to_list(rows_dict["dataset_id"][start:end])
-                col_channel_id = _to_list(rows_dict["channel_id"][start:end])
-                col_timestamp  = _to_list(rows_dict["timestamp"][start:end])     # liste de str ISO
-                col_sample_idx = _to_list(rows_dict["sample_index"][start:end])
-                col_value      = _to_list(rows_dict["value"][start:end])
-                col_is_ts      = _to_list(rows_dict["is_time_series"][start:end])
-
-                self.client.execute(
-                    """
-                    INSERT INTO sensor_data
-                    (dataset_id, channel_id, timestamp, sample_index, value, is_time_series)
-                    VALUES
-                    """,
-                    [
-                        col_dataset_id,
-                        col_channel_id,
-                        col_timestamp,
-                        col_sample_idx,
-                        col_value,
-                        col_is_ts,
-                    ],
-                    columnar=True,
-                )
+        # insert chunké
+        for start in range(0, n, chunk_rows):
+            end = min(start + chunk_rows, n)
+            data = []
+            for c in columns:
+                data.append(_to_list(rows_dict[c][start:end]))
+            self.client.execute(
+                f"INSERT INTO sensor_data ({', '.join(columns)}) VALUES",
+                data,
+                columnar=True,
+            )
 
 
     def insert_dataset_data(self, dataset_id: int, filename: str, channels_data: List[Dict[str, Any]]):
-        """Insert un dataset complet: datasets + channels + sensor_data (columnar chunké)"""
+        """Insert un dataset complet: datasets + channels + sensor_data (columnar chunké, en séparant time/index)."""
 
         created_at = datetime.utcnow()
         total_points = int(sum(int(ch["n_rows"]) for ch in channels_data))
@@ -192,63 +176,59 @@ class ClickHouseClientV2:
             channels_meta,
         )
 
-        # 3) sensor_data (columnar + vectorisé)
-        # Concaténation de colonnes numpy/pandas; conversion timestamp -> str ISO (rapide et fiable)
-        ds_cols, ch_cols, ts_cols, idx_cols, val_cols, flag_cols = [], [], [], [], [], []
-
-        iso_epoch = "1970-01-01 00:00:00.000000"
-
+        # 3) sensor_data
+        #    -> on sépare time series & index series
+        #    -> on insère channel par channel (chunké)
+        #    -> on évite de créer ts_str pour les indexées (timestamp default)
         for ch in channels_data:
             n = int(ch["n_rows"])
             if n == 0:
                 continue
 
-            # numpy arrays
+            # valeurs -> numpy
             values = ch["values"]
             if not isinstance(values, (np.ndarray, pd.Series)):
                 values = np.asarray(values, dtype=np.float64)
             else:
                 values = np.asarray(values, dtype=np.float64)
 
+            ds_col = np.full(n, dataset_id, dtype=np.uint64)
+            ch_col = np.full(n, int(ch["channel_id"]), dtype=np.uint32)
+
             if ch["has_time"]:
-                ts = ch["timestamps"]
-                # vectorisé en pandas
-                ts_pd = pd.to_datetime(ts)
+                # --- time series ---
+                ts_pd = pd.to_datetime(ch["timestamps"])  # vectorisé
+                # on envoie des strings ISO (fiable pour DateTime64(6))
                 ts_str = ts_pd.strftime("%Y-%m-%d %H:%M:%S.%f")
-                idx = np.zeros(n, dtype=np.uint64)
-                flag = np.ones(n, dtype=np.uint8)
+                idx_col = np.zeros(n, dtype=np.uint64)
+                is_ts = np.ones(n, dtype=np.uint8)
+
+                columns = ["dataset_id", "channel_id", "timestamp", "sample_index", "value", "is_time_series"]
+                rows = {
+                    "dataset_id": ds_col,
+                    "channel_id": ch_col,
+                    "timestamp": ts_str,      # pandas Series de str OK (converti en list dans l’insert)
+                    "sample_index": idx_col,
+                    "value": values,
+                    "is_time_series": is_ts,
+                }
+                self._insert_sensor_data_columnar(columns, rows, chunk_rows=1_000_000)
+
             else:
-                # indices en sample_index + timestamp = epoch
-                idx = np.asarray(ch["timestamps"], dtype=np.uint64)
-                ts_str = pd.Series([iso_epoch] * n)
-                flag = np.zeros(n, dtype=np.uint8)
+                # --- index series ---
+                # ICI: pas de timestamp → on laisse DEFAULT s'appliquer dans ClickHouse
+                idx_col = np.asarray(ch["timestamps"], dtype=np.uint64)
+                is_ts = np.zeros(n, dtype=np.uint8)
 
-            ds_cols.append(np.full(n, dataset_id, dtype=np.uint64))
-            ch_cols.append(np.full(n, int(ch["channel_id"]), dtype=np.uint32))
-            ts_cols.append(ts_str.astype(str).tolist())
-            idx_cols.append(idx)
-            val_cols.append(values)
-            flag_cols.append(flag)
-
-        if ds_cols:
-            # Concaténation
-            cat_dataset_id = np.concatenate(ds_cols)
-            cat_channel_id = np.concatenate(ch_cols)
-            cat_timestamp  = np.concatenate(ts_cols)          # array de str
-            cat_sample_idx = np.concatenate(idx_cols)
-            cat_value      = np.concatenate(val_cols)
-            cat_is_ts      = np.concatenate(flag_cols)
-
-            # IMPORTANT: convertit en list (le driver refuse ndarray en columnar)
-            rows = {
-                "dataset_id": cat_dataset_id.tolist(),
-                "channel_id": cat_channel_id.tolist(),
-                "timestamp":  cat_timestamp.tolist(),          # liste de str ISO
-                "sample_index": cat_sample_idx.tolist(),
-                "value": cat_value.tolist(),
-                "is_time_series": cat_is_ts.tolist(),
-            }
-            self._insert_sensor_data_columnar(rows, chunk_rows=1_000_000)
+                columns = ["dataset_id", "channel_id", "sample_index", "value", "is_time_series"]
+                rows = {
+                    "dataset_id": ds_col,
+                    "channel_id": ch_col,
+                    "sample_index": idx_col,
+                    "value": values,
+                    "is_time_series": is_ts,
+                }
+                self._insert_sensor_data_columnar(columns, rows, chunk_rows=250_000)
 
         logger.info(f"Dataset {dataset_id} inséré: {len(channels_data)} channels, {total_points} points")
 
