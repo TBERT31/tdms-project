@@ -8,3 +8,4 @@ python-multipart==0.0.9
 lttb==0.3.2
 numpy==1.26.4
 pydantic-settings==2.10.1
+clickhouse-driver==0.2.9

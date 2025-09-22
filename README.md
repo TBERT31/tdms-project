@@ -21,6 +21,8 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
+> Pour Linux utiliser la commande `source venv/bin/activate` à la place de `.\.venv\Scripts\Activate.ps1`
+
 ## On créer les fichiers python pour FastAPI
 
 ## Lancer le serveur FastAPI (à lancer dans le venv actif) | et donc `cd tdms-backend`
@@ -163,3 +165,17 @@ python .\make_meta_motor.py
 ```
 curl.exe -F "file=@motor_meta.tdms" http://localhost:8000/ingest
 ```
+
+# Installation de  ClickHouse
+```
+docker compose up -d
+```
+
+> Se rendre ensuite sur : http://localhost:8123/play
+> En haut à gauche entrer les identifiants : tdms_user / password
+
+## Pour vérifier que tout est paramétré correctement
+```
+SHOW DATABASES; 
+```
+

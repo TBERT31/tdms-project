@@ -1,0 +1,17 @@
+services:
+  clickhouse-server:
+    image: clickhouse/clickhouse-server
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse/
+      - clickhouse_logs:/var/log/clickhouse-server/
+    environment:
+      CLICKHOUSE_DB: tdms_data
+      CLICKHOUSE_USER: tdms_user
+      CLICKHOUSE_PASSWORD: password
+
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
