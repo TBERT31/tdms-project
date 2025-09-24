@@ -14,7 +14,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function IntelligentPage() {
-  // Hooks pour la gestion des données
   const {
     datasets,
     datasetId,
@@ -29,9 +28,8 @@ export default function IntelligentPage() {
     loadTimeRange,
     loadGlobalView,
     createZoomReloadHandler
-  } = useTdmsData();
+  } = useTdmsData(); // ← ce hook est maintenant 100% UUID string
 
-  // Hooks pour les paramètres avancés
   const {
     globalPoints,
     setGlobalPoints,
@@ -47,7 +45,7 @@ export default function IntelligentPage() {
     allParamsValid
   } = useAdvancedSettings();
 
-  // Effet pour charger automatiquement les données quand un channel change
+  // Charge automatiquement quand le channel change
   useEffect(() => {
     if (channelId) {
       loadTimeRange(channelId);
@@ -55,34 +53,31 @@ export default function IntelligentPage() {
     }
   }, [channelId, globalPoints, initialLimit, loadTimeRange, loadGlobalView]);
 
-  // Calcul du titre du channel
   const title = useMemo(() => {
-    const channel = channels.find(channel => channel.id === channelId);
+    const channel = channels.find(c => c.id === channelId);
     return channel ? `${channel.group_name} / ${channel.channel_name}` : "Signal";
   }, [channels, channelId]);
 
-  // Préparation des données pour le graphique
   const plotData = useMemo(() => {
     if (!globalData) return null;
-    
     return {
       x: globalData.x,
       y: globalData.y,
       title,
       unit: globalData.unit,
-      has_time: globalData.has_time
+      has_time: globalData.has_time,
     };
   }, [globalData, title]);
 
-  // Handler pour le zoom
-  const handleZoomReload = useMemo(() => 
-    createZoomReloadHandler(zoomPoints), 
+  const handleZoomReload = useMemo(
+    () => createZoomReloadHandler(zoomPoints),
     [createZoomReloadHandler, zoomPoints]
   );
 
-  const canReload = channelId && 
-    validateParam(globalPoints, 'points').isValid && 
-    validateParam(initialLimit, 'limit').isValid;
+  const canReload =
+    Boolean(channelId) &&
+    validateParam(globalPoints, "points").isValid &&
+    validateParam(initialLimit, "limit").isValid;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -94,25 +89,22 @@ export default function IntelligentPage() {
               <Zap className="h-6 w-6 text-white" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">
-                TDMS Viewer
-              </h1>
+              <h1 className="text-3xl font-bold text-gray-900">TDMS Viewer</h1>
               <p className="text-gray-600">Zoom Intelligent</p>
             </div>
           </div>
 
-          {/* Mode intelligent info */}
           <Alert className="bg-green-50 border-green-200">
             <Zap className="h-4 w-4 text-green-600" />
             <AlertDescription className="text-green-800">
-              <strong>Mode Intelligent:</strong> Vue globale ({globalPoints.toLocaleString()} pts) puis rechargement automatique 
-              avec plus de détails ({zoomPoints.toLocaleString()} pts) lors du zoom. 
+              <strong>Mode Intelligent:</strong> Vue globale ({globalPoints.toLocaleString()} pts) puis
+              rechargement automatique avec plus de détails ({zoomPoints.toLocaleString()} pts) lors du zoom.
               Limite initiale: {initialLimit.toLocaleString()} pts.
             </AlertDescription>
           </Alert>
         </div>
 
-        {/* Upload de fichiers */}
+        {/* Upload */}
         <UploadBox onDone={loadDatasets} />
 
         {/* Paramètres avancés */}
@@ -138,25 +130,23 @@ export default function IntelligentPage() {
               <Database className="h-5 w-5" />
               Sélection des données
             </CardTitle>
-            <CardDescription>
-              Choisissez un dataset et un canal pour commencer l'analyse
-            </CardDescription>
+            <CardDescription>Choisissez un dataset et un canal pour commencer l'analyse</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col sm:flex-row gap-4 items-end">
               <div className="flex-1 space-y-2">
                 <label className="text-sm font-medium text-gray-700">Dataset</label>
-                <Select 
-                  value={datasetId?.toString() ?? ""} 
-                  onValueChange={(value) => setDatasetId(Number(value))}
+                <Select
+                  value={datasetId ?? ""}
+                  onValueChange={(value) => setDatasetId(value)} 
                   disabled={loading}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Sélectionnez un dataset..." />
                   </SelectTrigger>
                   <SelectContent>
-                    {datasets.map(dataset => (
-                      <SelectItem key={dataset.id} value={dataset.id.toString()}>
+                    {datasets.map((dataset) => (
+                      <SelectItem key={dataset.id} value={dataset.id}>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline">{dataset.id}</Badge>
                           {dataset.filename}
@@ -169,17 +159,17 @@ export default function IntelligentPage() {
 
               <div className="flex-1 space-y-2">
                 <label className="text-sm font-medium text-gray-700">Channel</label>
-                <Select 
-                  value={channelId?.toString() ?? ""} 
-                  onValueChange={(value) => setChannelId(Number(value))}
+                <Select
+                  value={channelId ?? ""}
+                  onValueChange={(value) => setChannelId(value)} 
                   disabled={loading || !channels.length}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Sélectionnez un canal..." />
                   </SelectTrigger>
                   <SelectContent>
-                    {channels.map(channel => (
-                      <SelectItem key={channel.id} value={channel.id.toString()}>
+                    {channels.map((channel) => (
+                      <SelectItem key={channel.id} value={channel.id}>
                         <div className="flex items-center justify-between w-full">
                           <span>{channel.group_name} — {channel.channel_name}</span>
                           <Badge variant="secondary" className="ml-2">
@@ -192,8 +182,8 @@ export default function IntelligentPage() {
                 </Select>
               </div>
 
-              <Button 
-                onClick={() => channelId && loadGlobalView(channelId, globalPoints, initialLimit)} 
+              <Button
+                onClick={() => channelId && loadGlobalView(channelId, globalPoints, initialLimit)}
                 disabled={!canReload || loading}
                 className="min-w-fit"
               >
@@ -213,24 +203,16 @@ export default function IntelligentPage() {
           </CardContent>
         </Card>
 
-        {/* Informations sur le dataset */}
-        <DatasetInfo 
-          timeRange={timeRange} 
-          globalData={globalData} 
-          initialLimit={initialLimit} 
-        />
+        {/* Infos dataset */}
+        <DatasetInfo timeRange={timeRange} globalData={globalData} initialLimit={initialLimit} />
 
-        {/* Graphique intelligent */}
+        {/* Graphique */}
         {!plotData && !loading && (
           <Card>
             <CardContent className="p-8 text-center">
               <Database className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">
-                Sélectionnez un canal pour commencer
-              </h3>
-              <p className="text-gray-600">
-                Choisissez un dataset et un canal pour explorer vos données TDMS
-              </p>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Sélectionnez un canal pour commencer</h3>
+              <p className="text-gray-600">Choisissez un dataset et un canal pour explorer vos données TDMS</p>
             </CardContent>
           </Card>
         )}
@@ -239,12 +221,8 @@ export default function IntelligentPage() {
           <Card>
             <CardContent className="p-8 text-center">
               <RefreshCw className="h-12 w-12 text-blue-600 mx-auto mb-4 animate-spin" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">
-                Chargement de la vue globale...
-              </h3>
-              <p className="text-gray-600">
-                Préparation des données pour l'affichage
-              </p>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Chargement de la vue globale...</h3>
+              <p className="text-gray-600">Préparation des données pour l'affichage</p>
             </CardContent>
           </Card>
         )}
@@ -253,7 +231,7 @@ export default function IntelligentPage() {
           <Card className="mb-6">
             <CardContent className="p-6">
               <IntelligentPlotClient
-                key={`${channelId}-${globalPoints}-${zoomPoints}`}    
+                key={`${channelId}-${globalPoints}-${zoomPoints}`}
                 channelId={channelId}
                 initialData={plotData}
                 timeRange={timeRange}
@@ -263,7 +241,6 @@ export default function IntelligentPage() {
           </Card>
         )}
 
-        {/* Guide d'utilisation */}
         {plotData && (
           <Card>
             <CardHeader>

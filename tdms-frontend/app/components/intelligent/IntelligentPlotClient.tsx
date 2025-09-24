@@ -10,7 +10,7 @@ import { getPlotlyData, getPlotlyLayout, getPlotlyConfig } from "../../utils/plo
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
 
 interface IntelligentPlotProps {
-  channelId: number;
+  channelId: string;
   initialData: {
     x: (string | number)[];
     y: number[];

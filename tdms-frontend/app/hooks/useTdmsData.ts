@@ -1,16 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 
 interface Dataset {
-  id: number;
+  id: string; 
   filename: string;
   created_at: string;
   total_points?: number;
 }
 
 interface Channel {
-  id: number;
-  channel_id: number; 
-  dataset_id: number;
+  id: string;
+  channel_id: string;
+  dataset_id: string;       
   group_name: string;
   channel_name: string;
   n_rows: number;
@@ -31,7 +31,7 @@ interface FilteredWindowResp {
 }
 
 interface TimeRange {
-  channel_id: number;
+  channel_id: string;  
   has_time: boolean;
   min_timestamp?: number;
   max_timestamp?: number;
@@ -44,9 +44,9 @@ const API = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 export function useTdmsData() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [datasetId, setDatasetId] = useState<number | null>(null);
+  const [datasetId, setDatasetId] = useState<string | null>(null); 
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [channelId, setChannelId] = useState<number | null>(null);
+  const [channelId, setChannelId] = useState<string | null>(null);  
   const [timeRange, setTimeRange] = useState<TimeRange | null>(null);
   const [globalData, setGlobalData] = useState<FilteredWindowResp | null>(null);
   const [loading, setLoading] = useState(false);
@@ -55,10 +55,10 @@ export function useTdmsData() {
   const loadDatasets = useCallback(async () => {
     try {
       const response = await fetch(`${API}/datasets`, { cache: "no-store" });
-      const datasets = await response.json();
-      setDatasets(datasets);
-      if (!datasetId && datasets?.length) {
-        setDatasetId(datasets[0].id);
+      const ds: Dataset[] = await response.json();
+      setDatasets(ds);
+      if (!datasetId && ds?.length) {
+        setDatasetId(ds[0].id);           
       }
     } catch (error) {
       console.error("Erreur chargement datasets:", error);
@@ -66,14 +66,13 @@ export function useTdmsData() {
   }, [datasetId]);
 
   // Chargement des channels
-  const loadChannels = useCallback(async (selectedDatasetId: number) => {
+  const loadChannels = useCallback(async (selectedDatasetId: string) => {
     try {
       const response = await fetch(`${API}/datasets/${selectedDatasetId}/channels`, { cache: "no-store" });
-      const channels = await response.json();
-      setChannels(channels);
-      if (channels?.length) {
-        // Utiliser channel_id au lieu de id pour la compatibilité ClickHouse
-        setChannelId(channels[0].id || channels[0].channel_id);
+      const chs: Channel[] = await response.json();
+      setChannels(chs);
+      if (chs?.length) {
+        setChannelId(chs[0].id || chs[0].channel_id); // ← UUID string
       } else {
         setChannelId(null);
       }
@@ -83,11 +82,11 @@ export function useTdmsData() {
   }, []);
 
   // Chargement du time range
-  const loadTimeRange = useCallback(async (selectedChannelId: number) => {
+  const loadTimeRange = useCallback(async (selectedChannelId: string) => {
     try {
       const response = await fetch(`${API}/channels/${selectedChannelId}/time_range`, { cache: "no-store" });
       if (response.ok) {
-        const range = await response.json();
+        const range: TimeRange = await response.json();
         setTimeRange(range);
         console.log("Time range chargé:", range);
       }
@@ -98,22 +97,22 @@ export function useTdmsData() {
 
   // Chargement de la vue globale
   const loadGlobalView = useCallback(async (
-    selectedChannelId: number, 
-    globalPoints: number, 
+    selectedChannelId: string,
+    globalPoints: number,
     initialLimit: number
   ) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        channel_id: selectedChannelId.toString(),
-        points: globalPoints.toString(),
+        channel_id: selectedChannelId,                 
+        points: String(globalPoints),
         method: "lttb",
-        limit: initialLimit.toString()
+        limit: String(initialLimit),
       });
 
       const response = await fetch(`${API}/get_window_filtered?${params}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await response.text());
-      const result = await response.json();
+      const result: FilteredWindowResp = await response.json();
 
       setGlobalData(result);
       console.log(`Vue globale chargée: ${result.original_points} → ${result.sampled_points} points`);
@@ -134,24 +133,21 @@ export function useTdmsData() {
       console.log(`Rechargement zoom: ${range.start.toFixed(2)} → ${range.end.toFixed(2)}`);
 
       const params = new URLSearchParams({
-        channel_id: channelId.toString(),
-        start_timestamp: range.start.toString(),
-        end_timestamp: range.end.toString(),
-        points: zoomPoints.toString(),
+        channel_id: channelId,                          
+        start_timestamp: String(range.start),
+        end_timestamp: String(range.end),
+        points: String(zoomPoints),
         method: "lttb",
-        limit: "200000"
+        limit: "200000",
       });
 
       const response = await fetch(`${API}/get_window_filtered?${params}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await response.text());
-      const result = await response.json();
+      const result: FilteredWindowResp = await response.json();
 
       console.log(`Zoom rechargé: ${result.original_points} → ${result.sampled_points} points dans la zone`);
 
-      return {
-        x: result.x,
-        y: result.y
-      };
+      return { x: result.x, y: result.y };
     };
   }, [channelId, timeRange]);
 
@@ -175,11 +171,11 @@ export function useTdmsData() {
     timeRange,
     globalData,
     loading,
-    
+
     // Actions
     loadDatasets,
     loadTimeRange,
     loadGlobalView,
-    createZoomReloadHandler
+    createZoomReloadHandler,
   };
 }

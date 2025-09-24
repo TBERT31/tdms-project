@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 import logging
 from .config import settings
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,15 @@ class ClickHouseClientV2:
             },
         )
         self.database = settings.clickhouse_database
+        self._lock = threading.RLock()          # <-- crée le lock AVANT tout usage
         self._ensure_database_exists()
         self._create_tables()
+
+    # --- safe wrapper (thread-safe, supporte columnar, settings, etc.)
+    def _exec(self, sql: str, params: Any = None, *, settings: dict | None = None, **kwargs):
+        """Serialize l’accès au driver pour éviter 'Simultaneous queries...'"""
+        with self._lock:
+            return self.client.execute(sql, params or {}, settings=settings, **kwargs)
 
     # ----------------------
     # Setup / DDL
@@ -106,8 +114,6 @@ class ClickHouseClientV2:
             ORDER BY event_time
         """
 
-        # Materialized Views (idempotent via CREATE IF NOT EXISTS)
-        # Note: on utilise LEFT JOIN + IS NULL (compat large).
         mv_orphan_channels = f"""
             CREATE MATERIALIZED VIEW IF NOT EXISTS {self.database}.mv_orphan_channels_on_insert
             TO {self.database}.audit_orphans_channels AS
@@ -138,15 +144,13 @@ class ClickHouseClientV2:
         """
 
         try:
-            self.client.execute(datasets_table)
-            self.client.execute(channels_table)
-            self.client.execute(sensor_data_table)
-
-            self.client.execute(audit_channels)
-            self.client.execute(audit_points)
-            self.client.execute(mv_orphan_channels)
-            self.client.execute(mv_orphan_points)
-
+            self._exec(datasets_table)
+            self._exec(channels_table)
+            self._exec(sensor_data_table)
+            self._exec(audit_channels)
+            self._exec(audit_points)
+            self._exec(mv_orphan_channels)
+            self._exec(mv_orphan_points)
             logger.info("Tables + vues d’audit créées/vérifiées (UUID, partition=dataset_id)")
         except Exception as e:
             logger.error(f"Erreur création tables/MVs: {e}")
@@ -159,7 +163,7 @@ class ClickHouseClientV2:
         self,
         columns: List[str],
         rows_dict: Dict[str, Any],
-        chunk_rows: int = 250_000  # chunk plus petit: UUID = strings => RAM > int
+        chunk_rows: int = 250_000,
     ):
         """Insert columnar générique, chunké."""
         lengths = {len(rows_dict[c]) for c in columns}
@@ -176,38 +180,36 @@ class ClickHouseClientV2:
 
         for start in range(0, n, chunk_rows):
             end = min(start + chunk_rows, n)
-            data = []
-            for c in columns:
-                data.append(_to_list(rows_dict[c][start:end]))
-            self.client.execute(
+            data = [ _to_list(rows_dict[c][start:end]) for c in columns ]
+            self._exec(
                 f"INSERT INTO {self.database}.sensor_data ({', '.join(columns)}) VALUES",
                 data,
-                columnar=True,
+                columnar=True,               # <-- passe bien au driver
             )
 
     def _channel_exists(self, channel_id: uuid.UUID) -> bool:
-        res = self.client.execute(
+        res = self._exec(
             f"SELECT count() FROM {self.database}.channels WHERE channel_id = %(cid)s",
             {"cid": channel_id},
         )
         return bool(res and res[0][0] > 0)
 
-    def insert_dataset_data(self, dataset_id: str, filename: str, channels_data: List[Dict[str, Any]]):
+    def insert_dataset_data(self, dataset_id: uuid.UUID, filename: str, channels_data: List[Dict[str, Any]]):
         """Insert complet (datasets + channels + sensor_data), avec validations & chunks."""
         created_at = datetime.utcnow()
         total_points = int(sum(int(ch["n_rows"]) for ch in channels_data))
 
-        # 1) datasets
-        self.client.execute(
+        # 1) datasets (sync pour être visible immédiatement)
+        self._exec(
             f"INSERT INTO {self.database}.datasets (dataset_id, filename, created_at, total_points) VALUES",
             [(dataset_id, filename, created_at, total_points)],
-            settings={"async_insert": 0},  # ← sync pour être immédiatement visible
+            settings={"async_insert": 0},
         )
-        # 2) channels
+        # 2) channels (sync)
         channels_meta = [
             (
-                ch["channel_id"],              # UUID objet
-                dataset_id,                    # UUID objet
+                ch["channel_id"],              # UUID object
+                dataset_id,                    # UUID object
                 str(ch["group_name"]),
                 str(ch["channel_name"]),
                 str(ch.get("unit", "")),
@@ -216,20 +218,21 @@ class ClickHouseClientV2:
             )
             for ch in channels_data
         ]
-        self.client.execute(
+        self._exec(
             f"INSERT INTO {self.database}.channels (channel_id, dataset_id, group_name, channel_name, unit, has_time, n_rows) VALUES",
             channels_meta,
-            settings={"async_insert": 0},  # ← sync pour être immédiatement visible
+            settings={"async_insert": 0},
         )
-        self.client.execute("SYSTEM FLUSH ASYNC INSERT QUEUE")
+        # S'assure que les inserts async précédents sont vidés (si utilisés ailleurs)
+        self._exec("SYSTEM FLUSH ASYNC INSERT QUEUE")
 
-        # 3) sensor_data (par channel, séparant time/index)
+        # 3) sensor_data
         for ch in channels_data:
             n = int(ch["n_rows"])
             if n == 0:
                 continue
 
-            channel_id = ch["channel_id"]          # UUID objet
+            channel_id = ch["channel_id"]  # UUID
 
             # Validation backend
             if not self._channel_exists(channel_id):
@@ -244,8 +247,8 @@ class ClickHouseClientV2:
                 is_ts = np.ones(n, dtype=np.uint8)
 
                 rows = {
-                    "dataset_id": [dataset_id] * n,   # liste d’UUID objets
-                    "channel_id": [channel_id] * n,   # liste d’UUID objets
+                    "dataset_id": [dataset_id] * n,
+                    "channel_id": [channel_id] * n,
                     "timestamp": ts_str,
                     "sample_index": idx_col,
                     "value": values,
@@ -259,8 +262,8 @@ class ClickHouseClientV2:
                 is_ts = np.zeros(n, dtype=np.uint8)
 
                 rows = {
-                    "dataset_id": [dataset_id] * n,   # liste d’UUID objets
-                    "channel_id": [channel_id] * n,   # liste d’UUID objets
+                    "dataset_id": [dataset_id] * n,
+                    "channel_id": [channel_id] * n,
                     "sample_index": idx_col,
                     "value": values,
                     "is_time_series": is_ts,
@@ -274,7 +277,7 @@ class ClickHouseClientV2:
     # Reads
     # ----------------------
     def get_datasets(self) -> List[Dict[str, Any]]:
-        result = self.client.execute(
+        result = self._exec(
             f"""
             SELECT dataset_id, filename, created_at, total_points
             FROM {self.database}.datasets
@@ -291,8 +294,8 @@ class ClickHouseClientV2:
             for row in result
         ]
 
-    def get_channels(self, dataset_id: str) -> List[Dict[str, Any]]:
-        result = self.client.execute(
+    def get_channels(self, dataset_id: uuid.UUID) -> List[Dict[str, Any]]:
+        result = self._exec(
             f"""
             SELECT channel_id, group_name, channel_name, unit, has_time, n_rows
             FROM {self.database}.channels
@@ -305,7 +308,7 @@ class ClickHouseClientV2:
             {
                 "id": str(row[0]),
                 "channel_id": str(row[0]),
-                "dataset_id": dataset_id,
+                "dataset_id": str(dataset_id),
                 "group_name": row[1],
                 "channel_name": row[2],
                 "unit": row[3],
@@ -317,12 +320,12 @@ class ClickHouseClientV2:
 
     def get_channel_data(
         self,
-        channel_id: str,
+        channel_id: uuid.UUID,
         start_timestamp: Optional[float] = None,
         end_timestamp: Optional[float] = None,
         limit: int = 50000,
     ) -> pd.DataFrame:
-        meta_result = self.client.execute(
+        meta_result = self._exec(
             f"SELECT has_time FROM {self.database}.channels WHERE channel_id = %(channel_id)s",
             {"channel_id": channel_id},
         )
@@ -364,21 +367,21 @@ class ClickHouseClientV2:
             query += " ORDER BY sample_index LIMIT %(limit)s"
             params["limit"] = limit
 
-        result = self.client.execute(query, params)
+        result = self._exec(query, params)
         return pd.DataFrame(result, columns=["time", "value"])
 
-    def get_time_range(self, channel_id: str) -> Dict[str, Any]:
-        meta_result = self.client.execute(
+    def get_time_range(self, channel_id: uuid.UUID) -> Dict[str, Any]:
+        meta_result = self._exec(
             f"SELECT has_time FROM {self.database}.channels WHERE channel_id = %(channel_id)s",
             {"channel_id": channel_id},
         )
         if not meta_result:
-            return {"channel_id": channel_id, "error": "Channel non trouvé"}
+            return {"channel_id": str(channel_id), "error": "Channel non trouvé"}
 
         has_time = bool(meta_result[0][0])
 
         if has_time:
-            result = self.client.execute(
+            result = self._exec(
                 f"""
                 SELECT min(timestamp), max(timestamp), count()
                 FROM {self.database}.sensor_data
@@ -389,7 +392,7 @@ class ClickHouseClientV2:
             if result and result[0] and result[0][0] and result[0][1]:
                 min_time, max_time, total_points = result[0]
                 return {
-                    "channel_id": channel_id,
+                    "channel_id": str(channel_id),
                     "has_time": True,
                     "min_timestamp": min_time.timestamp(),
                     "max_timestamp": max_time.timestamp(),
@@ -398,7 +401,7 @@ class ClickHouseClientV2:
                     "total_points": total_points,
                 }
         else:
-            result = self.client.execute(
+            result = self._exec(
                 f"""
                 SELECT min(sample_index), max(sample_index), count()
                 FROM {self.database}.sensor_data
@@ -409,23 +412,23 @@ class ClickHouseClientV2:
             if result and result[0]:
                 min_index, max_index, total_points = result[0]
                 return {
-                    "channel_id": channel_id,
+                    "channel_id": str(channel_id),
                     "has_time": False,
                     "min_index": int(min_index),
                     "max_index": int(max_index),
                     "total_points": int(total_points),
                 }
 
-        return {"channel_id": channel_id, "has_time": has_time, "total_points": 0}
+        return {"channel_id": str(channel_id), "has_time": has_time, "total_points": 0}
 
     def get_downsampled_data(
         self,
-        channel_id: str,
+        channel_id: uuid.UUID,
         start_timestamp: Optional[float] = None,
         end_timestamp: Optional[float] = None,
         points: int = 2000,
     ) -> pd.DataFrame:
-        meta_result = self.client.execute(
+        meta_result = self._exec(
             f"SELECT has_time FROM {self.database}.channels WHERE channel_id = %(channel_id)s",
             {"channel_id": channel_id},
         )
@@ -466,11 +469,11 @@ class ClickHouseClientV2:
                 index_filter += " AND sample_index >= %(start_idx)s"
                 params["start_idx"] = int(start_timestamp)
             if end_timestamp is not None:
-                index_filter += " AND sample_index <= %(end_idx)s"
+                index_filter += " AND sample_index <= %(end_idx)s)"
                 params["end_idx"] = int(end_timestamp)
             query = query.format(index_filter=index_filter)
 
-        result = self.client.execute(query, params)
+        result = self._exec(query, params)
         df = pd.DataFrame(result, columns=["time", "value"])
         if len(df) > points:
             step = max(1, len(df) // points)
@@ -481,34 +484,33 @@ class ClickHouseClientV2:
     # Maintenance / Delete
     # ----------------------
     def delete_dataset(self, dataset_id: uuid.UUID):
-        self.client.execute(
+        self._exec(
             f"ALTER TABLE {self.database}.sensor_data DROP PARTITION %(p)s",
             {"p": dataset_id},
         )
-        self.client.execute(
+        self._exec(
             f"ALTER TABLE {self.database}.channels DELETE WHERE dataset_id = %(d)s",
             {"d": dataset_id},
         )
-        self.client.execute(
+        self._exec(
             f"ALTER TABLE {self.database}.datasets DELETE WHERE dataset_id = %(d)s",
             {"d": dataset_id},
         )
 
     def optimize_tables(self):
         try:
-            self.client.execute(f"OPTIMIZE TABLE {self.database}.datasets FINAL")
-            self.client.execute(f"OPTIMIZE TABLE {self.database}.channels FINAL")
-            self.client.execute(f"OPTIMIZE TABLE {self.database}.sensor_data FINAL")
+            self._exec(f"OPTIMIZE TABLE {self.database}.datasets FINAL")
+            self._exec(f"OPTIMIZE TABLE {self.database}.channels FINAL")
+            self._exec(f"OPTIMIZE TABLE {self.database}.sensor_data FINAL")
             logger.info("Tables ClickHouse optimisées")
         except Exception as e:
             logger.warning(f"Erreur optimisation: {e}")
 
-    # UUIDs → on ne compte plus sur un “max+1”
-    def new_dataset_id(self) -> str:
-        return str(uuid.uuid4())
+    def new_dataset_id(self) -> uuid.UUID:
+        return uuid.uuid4()
 
-    def new_channel_id(self) -> str:
-        return str(uuid.uuid4())
+    def new_channel_id(self) -> uuid.UUID:
+        return uuid.uuid4()
 
 
 clickhouse_client = ClickHouseClientV2()

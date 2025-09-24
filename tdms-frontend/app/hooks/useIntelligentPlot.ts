@@ -25,7 +25,7 @@ interface BoundsAlert {
 type DragMode = 'zoom' | 'pan' | 'select' | 'lasso' | 'drawclosedpath' | 'drawopenpath' | 'drawline' | 'drawrect' | 'drawcircle' | 'orbit' | 'turntable' | false;
 
 export function useIntelligentPlot(
-  channelId: number,
+  channelId: string,
   initialData: IntelligentPlotData,
   timeRange?: TimeRange,
   onZoomReload?: (range: { start: number; end: number }) => Promise<{ x: number[]; y: number[]; }>

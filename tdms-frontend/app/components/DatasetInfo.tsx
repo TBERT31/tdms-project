@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface TimeRange {
-  channel_id: number;
+  channel_id: string;
   has_time: boolean;
   min_timestamp?: number;
   max_timestamp?: number;

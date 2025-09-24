@@ -45,16 +45,16 @@ async def ingest(file: UploadFile = File(...)):
         content = await file.read()
         tmp_path.write_bytes(content)
 
-        dataset_uuid = uuid.uuid4()  
-
+        dataset_uuid = clickhouse_client.new_dataset_id()
         logger.info(f"Début conversion TDMS → ClickHouse pour dataset {dataset_uuid}")
 
         meta = tdms_to_clickhouse(str(tmp_path), dataset_uuid, file.filename)
 
         logger.info(f"Ingestion terminée: {len(meta)} channels")
-
         return {"dataset_id": str(dataset_uuid), "channels": meta}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erreur ingestion: {e}")
         raise HTTPException(500, f"Erreur ingestion: {str(e)}")
@@ -77,9 +77,15 @@ def list_datasets():
         raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
 @app.get("/datasets/{dataset_id}/channels")
-def list_channels(dataset_id: str):
+def list_channels(dataset_id: uuid.UUID):
+    """Liste les channels d'un dataset (dataset_id = UUID)"""
     try:
-        return clickhouse_client.get_channels(dataset_id)
+        channels = clickhouse_client.get_channels(dataset_id)
+        if not channels:
+            raise HTTPException(404, "Dataset not found or has no channels")
+        return channels
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erreur récupération channels: {e}")
         raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
@@ -89,9 +95,9 @@ def list_channels(dataset_id: str):
 # ----------------------
 @app.get("/window")
 def get_window(
-    channel_id: str = Query(...),
-    start: str | None = Query(None, description="ISO datetimes si has_time"),
-    end: str | None = Query(None, description="ISO datetimes si has_time"),
+    channel_id: uuid.UUID = Query(..., description="UUID du canal"),
+    start: str | None = Query(None, description="ISO date si has_time"),
+    end: str | None = Query(None, description="ISO date si has_time"),
     start_sec: float | None = Query(None, description="fenêtre relative en secondes"),
     end_sec: float | None = Query(None, description="fenêtre relative en secondes"),
     relative: bool = Query(False, description="temps en secondes depuis le début"),
@@ -147,21 +153,24 @@ def get_window(
                     df = df.iloc[bins]
 
         if len(df) == 0:
+            unit = ""
+        else:
+            unit_result = clickhouse_client._exec(
+                f"SELECT unit FROM {settings.clickhouse_database}.channels WHERE channel_id = %(channel_id)s LIMIT 1",
+                {"channel_id": channel_id},
+            )
+            unit = unit_result[0][0] if unit_result else ""
+
+        if len(df) == 0:
             return {
                 "x": [],
                 "y": [],
-                "unit": "",
+                "unit": unit,
                 "has_time": has_time,
                 "method": method,
                 "original_points": 0,
                 "returned_points": 0,
             }
-
-        unit_result = clickhouse_client.client.execute(
-            f"SELECT unit FROM {settings.clickhouse_database}.channels WHERE channel_id = %(channel_id)s LIMIT 1",
-            {"channel_id": channel_id},
-        )
-        unit = unit_result[0][0] if unit_result else ""
 
         if relative and has_time:
             min_time = df["time"].min()
@@ -178,13 +187,15 @@ def get_window(
             "returned_points": len(df),
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erreur endpoint window: {e}")
         raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
 @app.get("/get_window_filtered")
 def get_window_filtered(
-    channel_id: str = Query(...),
+    channel_id: uuid.UUID = Query(..., description="UUID du canal"),
     start_timestamp: float | None = Query(None, description="Timestamp Unix de début"),
     end_timestamp: float | None = Query(None, description="Timestamp Unix de fin"),
     cursor: float | None = Query(None, description="Curseur temporel pour pagination"),
@@ -229,7 +240,7 @@ def get_window_filtered(
 
             next_cursor = float(df["time"].iloc[-1]) if len(df) > 0 and has_more else None
 
-        unit_result = clickhouse_client.client.execute(
+        unit_result = clickhouse_client._exec(
             f"SELECT unit FROM {settings.clickhouse_database}.channels WHERE channel_id = %(channel_id)s LIMIT 1",
             {"channel_id": channel_id},
         )
@@ -266,6 +277,8 @@ def get_window_filtered(
             },
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erreur window filtré: {e}")
         raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
@@ -274,7 +287,7 @@ def get_window_filtered(
 # Time range & Utils
 # ----------------------
 @app.get("/channels/{channel_id}/time_range")
-def get_channel_time_range(channel_id: str):
+def get_channel_time_range(channel_id: uuid.UUID):
     try:
         return clickhouse_client.get_time_range(channel_id)
     except Exception as e:
@@ -282,32 +295,30 @@ def get_channel_time_range(channel_id: str):
         raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
 
 @app.get("/dataset_meta")
-def dataset_meta(dataset_id: str):
+def dataset_meta(dataset_id: uuid.UUID):
     try:
         channels = clickhouse_client.get_channels(dataset_id)
         if not channels:
             raise HTTPException(404, "Dataset not found")
-
-        channel_info = []
-        for ch in channels:
-            channel_info.append(
-                {
-                    "channel_id": ch["channel_id"],
-                    "group": ch["group_name"],
-                    "channel": ch["channel_name"],
-                    "rows": ch["n_rows"],
-                    "has_time": ch["has_time"],
-                    "unit": ch["unit"],
-                }
-            )
-
+        channel_info = [
+            {
+                "channel_id": ch["channel_id"],
+                "group": ch["group_name"],
+                "channel": ch["channel_name"],
+                "rows": ch["n_rows"],
+                "has_time": ch["has_time"],
+                "unit": ch["unit"],
+            }
+            for ch in channels
+        ]
         return {
-            "dataset_id": dataset_id,
+            "dataset_id": str(dataset_id),
             "channels": channel_info,
             "total_channels": len(channels),
             "storage": "clickhouse_partitioned_by_dataset_uuid",
         }
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erreur dataset_meta: {e}")
         raise HTTPException(500, f"Erreur ClickHouse: {str(e)}")
@@ -318,10 +329,10 @@ def dataset_meta(dataset_id: str):
 @app.get("/health")
 def health_check():
     try:
-        clickhouse_client.client.execute("SELECT 1")
+        clickhouse_client._exec("SELECT 1")
         clickhouse_status = "OK"
         expected_tables = {"datasets", "channels", "sensor_data", "audit_orphans_channels", "audit_orphans_points"}
-        tables_result = clickhouse_client.client.execute("SHOW TABLES")
+        tables_result = clickhouse_client._exec("SHOW TABLES")
         found_tables = {t[0] for t in tables_result}
         table_count = len(expected_tables.intersection(found_tables))
     except Exception as e:

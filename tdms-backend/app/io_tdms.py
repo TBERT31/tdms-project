@@ -14,10 +14,8 @@ def safe_filename(name: str) -> str:
     return name.rstrip(" .")[:200]
 
 
-def tdms_to_clickhouse(tdms_path: str, dataset_id: str, filename: str):
-    """
-    Convertit un fichier TDMS → ClickHouse (UUID, inserts columnar chunkés).
-    """
+def tdms_to_clickhouse(tdms_path: str, dataset_id: uuid.UUID, filename: str):
+    """Convertit un fichier TDMS → ClickHouse (UUID, inserts columnar chunkés)."""
     logger.info(f"[TDMS→ClickHouse] Début conversion: {filename}")
 
     tdms = TdmsFile.read(tdms_path)
@@ -51,7 +49,7 @@ def tdms_to_clickhouse(tdms_path: str, dataset_id: str, filename: str):
             unit = ch.properties.get("NI_UnitDescription") or ch.properties.get("unit_string") or ""
 
             channel_data = {
-                "channel_id": uuid.uuid4(),  # UUID par channel
+                "channel_id": clickhouse_client.new_channel_id(),  # UUID par channel
                 "group_name": group.name,
                 "channel_name": ch.name,
                 "unit": unit,
@@ -71,17 +69,16 @@ def tdms_to_clickhouse(tdms_path: str, dataset_id: str, filename: str):
             logger.error(f"Erreur insertion ClickHouse dataset {dataset_id}: {e}")
             raise
 
-    meta = []
-    for ch in channels_data:
-        meta.append(
-            {
-                "channel_id": ch["channel_id"],
-                "group": ch["group_name"],
-                "channel": ch["channel_name"],
-                "rows": ch["n_rows"],
-                "has_time": ch["has_time"],
-                "unit": ch["unit"],
-            }
-        )
+    meta = [
+        {
+            "channel_id": str(ch["channel_id"]),
+            "group": ch["group_name"],
+            "channel": ch["channel_name"],
+            "rows": ch["n_rows"],
+            "has_time": ch["has_time"],
+            "unit": ch["unit"],
+        }
+        for ch in channels_data
+    ]
     logger.info(f"[TDMS→ClickHouse] Terminé: {len(meta)} channels convertis")
     return meta
